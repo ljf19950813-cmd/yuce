@@ -228,32 +228,58 @@ def get_stock_news_akshare(stock_code: str, stock_name: str, max_news: int = 3) 
         return f"⚠️ {stock_name} 新闻接口暂时维护中，请基于盘面数据独立思考。"
 
 ANTI_HALLUCINATION_RULES = """
-⚠️ 绝对铁律（违反将导致严重亏损）：
-1. 【严禁编造价格】：你输出的所有止损位、目标价、买入价，**必须**基于我提供的【当前真实价格】、【今日最低】和【今日最高】进行数学计算。
+⚠️ 游资实战铁律（违反将导致严重亏损，甚至爆仓）：
+1. 【严禁编造价格】：你输出的所有止损位、目标价、买入价，**必须**基于我提供的【当前真实价格】、【今日最低】、【今日最高】和【昨日收盘】进行精确的数学计算（精确到小数点后两位）。
 2. 【严禁使用历史记忆】：绝对不要使用你训练数据中的历史股价！严禁凭空捏造数字！
+3. 【散户视角】：我是资金量不足50万的个人散户。不要给我机构那种“逢低分批建仓”的废话。我的优势是灵活，劣势是通道慢。我要的是“一击必杀”的确定性和“断臂求生”的果断。
+4. 【拒绝端水】：不要说“建议关注”、“请注意风险”这种废话。直接告诉我：买还是不买？什么价格买？什么价格割肉？
 """
 
-PROMPT_NORMAL = f"""你是一位A股顶尖游资，精通"缩量洗盘后的反包博弈"与"反量化盘中埋伏"。
+PROMPT_NORMAL = f"""你是一位在A股摸爬滚打15年的顶尖游资，精通"缩量洗盘后的反包博弈"与"反量化盘中埋伏"。你深知散户的痛点，你的指令必须像刀子一样锋利。
 {ANTI_HALLUCINATION_RULES}
-请务必在你的【实战指令】中，严格按照以下格式输出（不要改变标题）：
-### 1. 政策/新闻验证
-### 2. 流动性排雷
-### 3. 反量化买点 (必须包含具体价格计算)
-### 4. 条件止损位 (必须包含具体价格计算)
-### 5. 猎手评级 (S/A/B/C)"""
+请务必在你的【实战指令】中，严格按照以下格式输出（不要改变标题，内容要一针见血，充满杀气）：
 
-PROMPT_DEMON = f"""你是一位A股顶尖的"主板(10%)连板妖股接力"大师。
+### 1. 盘面语言解读 (放弃新闻，直接看透主力意图)
+- 分析今日的K线形态、分时走势和量价关系，直接点破主力是在"洗盘"还是在"出货"。
+
+### 2. 流动性与量化排雷
+- 该股是否被量化资金主导？换手率和成交额是否支持散户安全进出？
+
+### 3. 反量化买点 (必须包含具体价格计算，精确到分)
+- 给出**唯一**的买入价格（基于今日低点、均价线或重要支撑位计算）。
+- 说明买入的逻辑（例如：跌破今日低点后迅速拉回的“黄金坑”）。
+
+### 4. 断臂求生止损位 (必须包含具体价格计算)
+- 给出**绝对止损价**（跌破此价无条件核按钮，不抱任何幻想）。
+
+### 5. 猎手评级与仓位建议 (S/A/B/C)
+- S级：重仓出击；A级：半仓试错；B级：轻仓观察；C级：狗都不看，直接拉黑。"""
+
+PROMPT_DEMON = f"""你是一位A股顶尖的"主板(10%)连板妖股接力"大师。你深知妖股的本质是情绪的极致和资金的接力，你从不看基本面，只看情绪和筹码。
 {ANTI_HALLUCINATION_RULES}
-请务必在你的【实战指令】中，严格按照以下格式输出（不要改变标题）：
-### 1. 情绪定性与连板身位
+请务必在你的【实战指令】中，严格按照以下格式输出（不要改变标题，内容要一针见血，充满杀气）：
+
+### 1. 情绪定性与连板身位 (看透该股在情绪周期中的位置)
+- 当前市场情绪是“冰点”、“发酵”还是“高潮”？该股是“龙头”、“龙二”还是“跟风杂毛”？
+
 ### 2. 筹码断层与爆量风险
+- 分析今日的换手率是否健康？是否存在获利盘兑现的“断头铡刀”风险？
+
 ### 3. 主板接力手法 (必须包含具体打板/半路价格)
+- 给出**唯一**的接力手法（例如：弱转强半路、或者打板确认）。给出具体的挂单价格。
+
 ### 4. 断头铡刀止损 (必须包含具体止损价格)
-### 5. 猎手评级 (S/A/B/C)"""
+- 妖股接力失败就是A杀，给出**次日开盘或盘中的绝对止损价**。
+
+### 5. 猎手评级与仓位建议 (S/A/B/C)
+- S级：龙头信仰，满仓干；A级：试错仓；B级：看戏；C级：杂毛跟风，直接拉黑。"""
 
 def analyze_with_llm(stock_dict, minute_feature_text, market_context, is_demon=False):
     if not llm_client: return "⚠️ 未配置大模型", "⚠️ 无Key"
-    news_context = get_stock_news_akshare(stock_dict.get('code'), stock_dict.get('name'))
+    
+    # 【修改点】彻底删掉 akshare 新闻调用，改为固定文本
+    news_context = "【今日无重大突发新闻，请纯粹基于盘面量价与情绪进行推演】"
+    
     system_p = PROMPT_DEMON if is_demon else PROMPT_NORMAL
     
     price_info = f"""
@@ -309,10 +335,34 @@ def export_to_excel_bytes(normal_results, demon_results):
     all_data = []
     for item in normal_results:
         row, final = item['row'], item['final']
-        all_data.append({"轨道": "🛡️ 潜伏池", "股票名称": row['name'], "代码": row['code'], "当前价": row.get('close', ''), "涨幅%": f"{row['pct_chg']:.2f}", "换手%": f"{row['turnover']:.2f}", "量比": f"{row['vol_ratio']:.2f}", "评级": extract_section(final, "猎手评级"), "买点推演": extract_section(final, "反量化买点"), "止损位": extract_section(final, "条件止损位"), "新闻验证": extract_section(final, "政策/新闻验证")})
+        all_data.append({
+            "轨道": "🛡️ 潜伏池", 
+            "股票名称": row['name'], 
+            "代码": row['code'], 
+            "当前价": row.get('close', ''), 
+            "涨幅%": f"{row['pct_chg']:.2f}", 
+            "换手%": f"{row['turnover']:.2f}", 
+            "量比": f"{row['vol_ratio']:.2f}", 
+            "评级": extract_section(final, "猎手评级"), 
+            "买点推演": extract_section(final, "反量化买点"), 
+            "止损位": extract_section(final, "断臂求生止损位"),   # 同步新Prompt标题
+            "盘面解读": extract_section(final, "盘面语言解读")    # 同步新Prompt标题
+        })
     for item in demon_results:
         row, final = item['row'], item['final']
-        all_data.append({"轨道": "🐉 妖股池", "股票名称": row['name'], "代码": row['code'], "当前价": row.get('close', ''), "涨幅%": f"{row['pct_chg']:.2f}", "换手%": f"{row['turnover']:.2f}", "量比": f"{row['vol_ratio']:.2f}", "评级": extract_section(final, "猎手评级"), "买点推演": extract_section(final, "主板接力手法"), "止损位": extract_section(final, "断头铡刀止损"), "情绪身位": extract_section(final, "情绪定性与连板身位")})
+        all_data.append({
+            "轨道": "🐉 妖股池", 
+            "股票名称": row['name'], 
+            "代码": row['code'], 
+            "当前价": row.get('close', ''), 
+            "涨幅%": f"{row['pct_chg']:.2f}", 
+            "换手%": f"{row['turnover']:.2f}", 
+            "量比": f"{row['vol_ratio']:.2f}", 
+            "评级": extract_section(final, "猎手评级"), 
+            "买点推演": extract_section(final, "主板接力手法"), 
+            "止损位": extract_section(final, "断头铡刀止损"), 
+            "情绪身位": extract_section(final, "情绪定性与连板身位")
+        })
         
     if not all_data: return None
         
