@@ -1,0 +1,9 @@
+streamlit
+tickflow
+openai
+httpx
+akshare
+pandas
+openpyxl
+prettytable
+numpy
