@@ -302,22 +302,65 @@ def calculate_real_vol_ratio(candidate_df):
 # ================= 5. 概念探针与四轨 Prompt (防幻觉重构) =================
 @st.cache_data(ttl=3600, show_spinner=False)
 def build_hot_concept_dict(df_market):
+    """
+    🔧 重构：纯内存计算热门行业，彻底摆脱外部接口依赖
+    """
     if df_market is None or df_market.empty:
         return {}, []
+    
     try:
-        industry_stats = df_market.groupby('industry')['pct_chg'].mean().reset_index()
-        industry_stats = industry_stats[industry_stats['industry'] != '未知行业']
-        top_industries = industry_stats.sort_values(by='pct_chg', ascending=False).head(10)
-        hot_concepts = top_industries['industry'].tolist()
+        # 1. 确定行业字段名 (兼容 TickFlow 不同的返回格式)
+        ind_col = None
+        if 'ext.industry' in df_market.columns:
+            ind_col = 'ext.industry'
+        elif 'industry' in df_market.columns:
+            ind_col = 'industry'
+            
+        if not ind_col:
+            raise ValueError("当前数据源缺少行业分类字段")
+        
+        # 2. 过滤无效数据 (剔除ST、退市及未知行业)
+        valid_df = df_market[~df_market['name'].str.contains('ST|退', na=False)].copy()
+        valid_df = valid_df[valid_df[ind_col] != '未知行业']
+        if 'board' in valid_df.columns:
+            valid_df = valid_df[valid_df['board'] != 'BSE'] # 剔除北交所
+            
+        if valid_df.empty:
+            raise ValueError("过滤后无有效标的")
+        
+        # 3. 按行业分组聚合计算
+        sector_stats = valid_df.groupby(ind_col).agg(
+            avg_pct=('pct_chg', 'mean'),
+            count=('code', 'count'),
+            limit_up_count=('pct_chg', lambda x: (x >= 9.5).sum())
+        ).reset_index()
+        
+        # 4. 过滤样本过少的行业 (少于3只股票不算主流板块)
+        sector_stats = sector_stats[sector_stats['count'] >= 3]
+        
+        # 5. 综合排序：优先看平均涨幅，涨幅接近时看涨停家数
+        sector_stats = sector_stats.sort_values(
+            by=['avg_pct', 'limit_up_count'], 
+            ascending=[False, False]
+        )
+        
+        # 6. 提取 Top 10 热门概念并构建字典
+        top_sectors = sector_stats.head(10)
+        hot_concepts = top_sectors[ind_col].tolist()
+        
         concept_dict = {}
         for _, row in df_market.iterrows():
             code = str(row['code'])
-            ind = str(row['industry'])
-            if ind != '未知行业':
+            ind = str(row[ind_col])
+            if ind != '未知行业' and ind in hot_concepts:
                 concept_dict[code] = [ind]
+                
+        logging.info(f"✅ 内存计算生成 Top 热门行业: {', '.join(hot_concepts[:5])}")
         return concept_dict, hot_concepts
+        
     except Exception as e:
-        logging.warning(f"热门行业计算失败: {e}")
+        logging.warning(f"⚠️ 行业自动计算受阻 ({e})，降级使用名称推演模式")
+        # 兜底：如果内存计算失败，返回空字典，后续 get_stock_concepts 会自动走名称推演逻辑
         return {}, []
 
 @st.cache_data(ttl=3600, show_spinner=False)
