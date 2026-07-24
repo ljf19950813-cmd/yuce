@@ -11,16 +11,11 @@ import warnings
 import httpx
 import streamlit as st
 
-# 尝试导入可选库
+# 尝试导入可选库 (已彻底移除 AkShare)
 try:
     from tickflow import TickFlow
 except ImportError:
     TickFlow = None
-
-try:
-    import akshare as ak
-except ImportError:
-    ak = None
 
 warnings.filterwarnings("ignore")
 
@@ -114,6 +109,12 @@ def get_data_tickflow():
         df['turnover'] = turnover
         df['amount'] = amount
         
+        # 提取行业信息 (用于替代 AkShare 的概念板块)
+        if 'ext.industry' in df.columns:
+            df['industry'] = df['ext.industry'].astype(str)
+        else:
+            df['industry'] = '未知行业'
+        
         def identify_board(code):
             code = str(code)
             if code.startswith(('60', '00')): return 'Main'
@@ -133,7 +134,8 @@ def get_market_context(tf_client, df):
     market_summary = []
     ratio = 1.0
     try:
-        for name, code in indices.indices():
+        # 🔧 修复1：将 indices.indices() 改为 indices.items()
+        for name, code in indices.items():
             df_k = tf_client.klines.get(code, period="1d", count=5, as_dataframe=True)
             if df_k is not None and len(df_k) >= 2:
                 latest, prev = df_k.iloc[-1], df_k.iloc[-2]
@@ -152,10 +154,9 @@ def get_market_context(tf_client, df):
             ratio = up_count / max(down_count, 1)
             sentiment = "极度亢奋" if ratio > 3 else ("强势" if ratio > 1.5 else ("均衡" if ratio > 0.8 else ("弱势" if ratio > 0.5 else "极度冰点")))
             
-            # 🚀 补丁B：极简情绪周期探针 (核按钮与大面统计)
             zt_main = len(df[(df['board']=='Main') & (df['pct_chg']>9.5)])
-            dt_main = len(df[(df['board']=='Main') & (df['pct_chg']<-9.5)]) # 跌停家数
-            big_loss = len(df[df['pct_chg'] < -7.0]) # 大面家数
+            dt_main = len(df[(df['board']=='Main') & (df['pct_chg']<-9.5)])
+            big_loss = len(df[df['pct_chg'] < -7.0])
             
             market_summary.append(f"- 全市场情绪: 涨{up_count}/跌{down_count}, 涨跌比{ratio:.2f}, 【{sentiment}】")
             market_summary.append(f"- 赚钱效应: 主板涨停 {zt_main} 家")
@@ -190,7 +191,7 @@ def get_tickflow_data_for_symbols(tf_client, symbols_list):
             if df_k is None or df_k.empty or len(df_k) < 2: continue
             latest, prev = df_k.iloc[-1], df_k.iloc[-2]
             close_today = float(latest.get('close', latest.get('last_price')))
-            close_prev = float(prev.get('/close', prev.get('last_price')))
+            close_prev = float(prev.get('close', prev.get('last_price'))) 
             pct = (close_today - close_prev) / close_prev * 100 if close_prev > 0 else 0
             high = float(latest.get('high', latest.get('high_price', close_today)))
             low = float(latest.get('low', latest.get('low_price', close_today)))
@@ -198,10 +199,11 @@ def get_tickflow_data_for_symbols(tf_client, symbols_list):
             vol_prev = float(prev.get('volume', 0))
             vol_ratio = vol_today / vol_prev if vol_prev > 0 else 99.0
             valid_rows.append({
-                'tf_code': tf_code, 'code': tf_code.split('.')[0], 'name': s,
+                'tf_code': tf_code, 'code': tf_code.split('.')[0], 'name': tf_code.split('.')[0],
                 'close': close_today, 'high': high, 'low': low, 'pre_close': close_prev,
                 'pct_chg': pct, 'turnover': 0.0, 'amount': 0.0, 'vol_ratio': vol_ratio,
-                'board': 'Main' if tf_code.endswith('.SH') or tf_code.startswith('00') else 'GEM'
+                'board': 'Main' if tf_code.endswith('.SH') or tf_code.startswith('00') else 'GEM',
+                'industry': '自选股行业'
             })
             time.sleep(0.1)
         except Exception as e:
@@ -227,19 +229,14 @@ def filter_demon_stocks(df):
     pct_mask = df['pct_chg'] >= 7.0 
     return df[price_mask & turnover_mask & amount_mask & pct_mask].sort_values(by='pct_chg', ascending=False).head(10)
 
-# 🧊 轨道三：冰点防御池筛选器 (加入抗补跌基因)
 def filter_defense_stocks(df, tf_client):
     df = df[~df['name'].str.contains('ST|退', na=False)]
     df = df[df['board'] == 'Main'] 
-    # 基础门槛：微涨(0~2%) + 成交额>5亿 + 换手<5% + 股价>5元
     mask = (df['pct_chg'] >= 0.0) & (df['pct_chg'] <= 2.0) & \
            (df['amount'] >= 500000000) & (df['turnover'] <= 5.0) & (df['close'] >= 5.0)
-    
-    candidates = df[mask].sort_values(by='amount', ascending=False).head(15) # 取前15个做二次验证
-    
+    candidates = df[mask].sort_values(by='amount', ascending=False).head(15)
     if candidates.empty: return pd.DataFrame()
     
-    # 🚀 补丁A：抗补跌基因验证 (近2日不创新低)
     verified_codes = []
     for _, row in candidates.iterrows():
         try:
@@ -247,13 +244,11 @@ def filter_defense_stocks(df, tf_client):
             if df_k is not None and len(df_k) >= 2:
                 today_close = float(df_k.iloc[-1].get('close', df_k.iloc[-1].get('last_price')))
                 yesterday_low = float(df_k.iloc[-2].get('low', df_k.iloc[-2].get('low_price')))
-                # 核心逻辑：今日收盘价必须大于昨日最低价，说明没有破位
                 if today_close > yesterday_low:
                     verified_codes.append(row['tf_code'])
             time.sleep(0.05)
         except:
             continue
-            
     return candidates[candidates['tf_code'].isin(verified_codes)].head(CONFIG['TOP_N_DEFENSE'])
 
 def calculate_real_vol_ratio(candidate_df):
@@ -272,50 +267,57 @@ def calculate_real_vol_ratio(candidate_df):
     candidate_df['vol_ratio'] = real_vol_ratios
     return candidate_df
 
-# ================= 5. 概念探针与四轨 Prompt =================
-# 🔒 补丁C：概念获取“绝对防崩溃”装甲
+# ================= 5. 概念探针与四轨 Prompt (TickFlow 内存计算替代方案) =================
 @st.cache_data(ttl=3600, show_spinner=False)
-def build_hot_concept_dict():
-    if not ak: return {}, []
-    try:
-        df_concepts = ak.stock_board_concept_name_em()
-        if df_concepts is None or df_concepts.empty or '涨跌幅' not in df_concepts.columns:
-            return {}, []
-            
-        top_concepts = df_concepts.sort_values(by='涨跌幅', ascending=False).head(10)['板块名称'].tolist()
+def build_hot_concept_dict(df_market):
+    """
+    🔧 修复2：彻底弃用 AkShare，改用 TickFlow 全市场数据在内存中计算“今日最强行业/概念”
+    """
+    if df_market is None or df_market.empty:
+        return {}, []
         
-        concept_dict = {} 
-        for concept_name in top_concepts:
-            try:
-                df_cons = ak.stock_board_concept_cons_em(symbol=concept_name)
-                if df_cons is None or df_cons.empty or '代码' not in df_cons.columns: continue
-                for code in df_cons['代码'].astype(str).tolist():
-                    if code not in concept_dict:
-                        concept_dict[code] = []
-                    concept_dict[code].append(concept_name)
-                time.sleep(0.1)
-            except: continue
-        return concept_dict, top_concepts
+    try:
+        # 按行业分组，计算平均涨幅
+        industry_stats = df_market.groupby('industry')['pct_chg'].mean().reset_index()
+        industry_stats = industry_stats[industry_stats['industry'] != '未知行业']
+        
+        # 排序取 Top 10 热门行业
+        top_industries = industry_stats.sort_values(by='pct_chg', ascending=False).head(10)
+        hot_concepts = top_industries['industry'].tolist()
+        
+        # 构建字典 {code: [industry]}
+        concept_dict = {}
+        for _, row in df_market.iterrows():
+            code = str(row['code'])
+            ind = str(row['industry'])
+            if ind != '未知行业':
+                concept_dict[code] = [ind]
+                
+        return concept_dict, hot_concepts
     except Exception as e:
-        logging.warning(f"概念字典构建失败 (已平滑降级): {e}")
+        logging.warning(f"热门行业计算失败 (已平滑降级): {e}")
         return {}, []
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def get_stock_concepts(stock_code: str, concept_dict: dict) -> str:
+def get_stock_concepts(stock_code: str, concept_dict: dict, stock_name: str = "") -> str:
+    """获取个股概念（TickFlow 行业 + 名称硬编码兜底）"""
     pure_code = re.sub(r'[^0-9]', '', str(stock_code))
-    if len(pure_code) != 6: return "【代码异常】"
     
+    # 优先使用热门概念字典 (从全市场数据中获取的行业)
     if pure_code in concept_dict:
-        return f"【今日热门概念】: {', '.join(concept_dict[pure_code])}"
+        return f"【今日热门板块/行业】: {', '.join(concept_dict[pure_code])}"
     
-    if ak:
-        try:
-            df_info = ak.stock_individual_info_em(symbol=pure_code)
-            if df_info is not None and not df_info.empty:
-                industry = df_info[df_info['item'] == '行业'].iloc[0]['value'] if '行业' in df_info['item'].values else '未知'
-                return f"【所属行业】: {industry}"
-        except: pass
-    return "【概念缺失，请基于股票名称自行推演】"
+    # 终极兜底：基于股票名称和代码段的硬编码行业推演 (确保 AI 永远有题材可分析)
+    name = str(stock_name).lower()
+    if '银行' in name or pure_code.startswith(('601398', '601288', '601939', '600036')): return "【所属行业】: 银行/大金融"
+    if '证券' in name or '券商' in name: return "【所属行业】: 证券/大金融"
+    if '药' in name or '医' in name or '生物' in name: return "【所属行业】: 医药生物"
+    if '半导' in name or '芯' in name or '微电' in name: return "【所属行业】: 半导体/芯片"
+    if '科技' in name or '软件' in name or '信息' in name: return "【所属行业】: 计算机/TMT"
+    if '新能' in name or '锂' in name or '电池' in name: return "【所属行业】: 新能源/锂电"
+    if '酒' in name or '食品' in name: return "【所属行业】: 大消费/白酒"
+    
+    return f"【概念缺失，请基于股票名称 '{stock_name}' 自行推演所属板块】"
 
 ANTI_HALLUCINATION_RULES = """
 ⚠️ 游资实战铁律（违反将导致严重亏损，甚至爆仓）：
@@ -363,12 +365,14 @@ PROMPT_WATCHLIST = f"""你是一位严苛的自选股审视者。请结合当前
 def analyze_with_llm(stock_dict, minute_feature_text, market_context, concept_dict, mode="normal"):
     if not llm_client: return "⚠️ 未配置大模型", "⚠️ 无Key"
     
-    concept_info = get_stock_concepts(stock_dict.get('code'), concept_dict)
+    # 传入 stock_name 用于兜底推演
+    concept_info = get_stock_concepts(stock_dict.get('code'), concept_dict, stock_dict.get('name'))
     news_context = "【今日无重大突发新闻，请纯粹基于盘面量价、情绪与所属题材进行推演】"
     
+    # 🔧 修复3：大小写统一
     if mode == "demon": system_p = PROMPT_DEMON
     elif mode == "defense": system_p = PROMPT_DEFENSE
-    elif mode == "watchlist": system_p = PROMPT_watchlist
+    elif mode == "watchlist": system_p = PROMPT_WATCHLIST
     else: system_p = PROMPT_NORMAL
     
     price_info = f"""
@@ -406,6 +410,7 @@ def get_minute_features(tf_client, tf_codes):
             if df_k is None or df_k.empty: features_map[tf_code] = "【分时缺失】"; continue
             total_vol = pd.to_numeric(df_k['volume'], errors='coerce').sum()
             tail_vol = pd.to_numeric(df_k['volume'].tail(2), errors='coerce').sum()
+            tail_ratio = (tail_vol / total_vol * 100) if total_vol > 0 else 0
             logic_text = ""
             if tail_ratio > 25:
                 logic_text = " (尾盘异动抢筹)"
@@ -495,15 +500,14 @@ if run_analysis:
             st.subheader("🌍 今日大盘与情绪环境")
             st.text(market_context)
             
-            # 构建热门概念字典
-            with st.spinner("🔥 正在扫描今日热门概念板块 (东财源)..."):
-                concept_dict, hot_concepts = build_hot_concept_dict()
+            with st.spinner("🔥 正在计算今日热门行业/概念 (基于全市场真实交易数据)..."):
+                # 🔧 修复4：传入 df 进行内存计算，彻底弃用 AkShare
+                concept_dict, hot_concepts = build_hot_concept_dict(df)
                 if hot_concepts:
-                    st.info(f"🎯 今日资金主攻方向: {', '.join(hot_concepts[:5])}")
+                    st.info(f"🎯 今日资金主攻方向 (行业/板块): {', '.join(hot_concepts[:5])}")
                 else:
-                    st.warning("⚠️ 概念板块数据获取失败，已降级使用行业数据 (不影响核心逻辑)")
+                    st.warning("⚠️ 行业板块数据获取失败，已降级使用名称推演数据 (不影响核心逻辑)")
                     
-            # 轨道一 & 轨道二
             st.info("🛡️ 【轨道一】筛选缩量洗盘猎物...")
             normal_df = filter_normal_stocks(df)
             if not normal_df.empty:
@@ -516,7 +520,6 @@ if run_analysis:
                 demon_df = calculate_real_vol_ratio(demon_df)
                 demon_df = demon_df.head(CONFIG['TOP_N_DEMON'])
                 
-            # 轨道三：冰点防御池 (自动触发)
             defense_df = pd.DataFrame()
             if market_ratio < 0.8: 
                 st.warning("🧊 【轨道三】检测到市场处于【弱势/冰点】，自动激活防御池！")
@@ -524,7 +527,6 @@ if run_analysis:
                 if not defense_df.empty:
                     defense_df = calculate_real_vol_ratio(defense_df)
                     
-            # 轨道四：自选股分析
             st.info("👁️ 【轨道四】获取自选股数据...")
             watchlist_symbols = [s.strip() for s in re.split(r'[,\n\s]+', watchlist_input) if s.strip()]
             watchlist_df = get_tickflow_data_for_symbols(tf, watchlist_symbols)
@@ -535,7 +537,8 @@ if run_analysis:
             if not normal_df.empty: all_codes.extend(normal_df['tf_code'].tolist())
             if not demon_df.empty: all_codes.extend(demon_df['tf_code'].tolist())
             if not defense_df.empty: all_codes.extend(defense_df['tf_code'].tolist())
-            if not watchlist_df.empty: all_codes.extend(watchlist_df['tf_code'].lookup())
+            # 🔧 修复5：将 lookup() 改为 tolist()
+            if not watchlist_df.empty: all_codes.extend(watchlist_df['tf_code'].tolist())
             
             minute_features = get_minute_features(tf, list(set(all_codes)))
             normal_results, demon_results, defense_results, watchlist_results = [], [], [], []
@@ -546,7 +549,6 @@ if run_analysis:
             progress_bar = st.progress(0)
             current_task = 0
             
-            # 执行 AI 分析
             if not normal_df.empty:
                 for _, row in normal_df.iterrows():
                     current_task += 1
@@ -581,7 +583,6 @@ if run_analysis:
                     
             progress_bar.empty()
             
-            # 展示结果
             st.subheader("🛡️ 轨道一：缩量潜伏池")
             if normal_results:
                 for idx, item in enumerate(normal_results, 1):
@@ -598,32 +599,33 @@ if run_analysis:
                     with st.expander(f"[{idx}] {row['name']} ({row['code']}) | 涨幅:{row['pct_chg']:.1f}% 换手:{row['turnover']:.1f}%"):
                         if reasoning: st.caption(f"🧠 脑内推演: {reasoning[:500]}...")
                         st.markdown(final)
-            else: st.warning("股池暂无符合轨道二条件的标的")
-            
-            if market_ratio < 0.8:
-                st.subheader("🧊 轨道三：冰点防御池 (压舱石)")
-                if defense_results:
-                    for idx, item in enumerate(defense_results, 1):
-                        row, reasoning, final = item['row'], item['reasoning'], item['final']
-                        with st.expander(f"[{idx}] {row['name']} ({row['code']}) | 涨幅:{row['pct_chg']:.1f}% 换手:{row['turnover']:.1f}%"):
-                            if reasoning: st.caption(f"🧠 脑内推演: {reasoning[:500]}...")
-                            st.markdown(final)
-                else: st.warning("冰点期暂无符合条件的极端防御标的")
-                
-            st.subheader("👁️ 轨道四：自选股深度分析")
+            else: st.warning("今日暂无符合轨道二条件的标的")
+
+            st.subheader("🧊 轨道三：冰点防御池")
+            if defense_results:
+                for idx, item in enumerate(defense_results, 1):
+                    row, reasoning, final = item['row'], item['reasoning'], item['final']
+                    with st.expander(f"[{idx}] {row['name']} ({row['code']}) | 涨幅:{row['pct_chg']:.1f}% 换手:{row['turnover']:.1f}%"):
+                        if reasoning: st.caption(f"🧠 脑内推演: {reasoning[:500]}...")
+                        st.markdown(final)
+            else: st.info("今日大盘情绪尚可，防御池未激活 (或无符合条件标的)")
+
+            st.subheader("👁️ 轨道四：自选股诊断")
             if watchlist_results:
                 for idx, item in enumerate(watchlist_results, 1):
                     row, reasoning, final = item['row'], item['reasoning'], item['final']
-                    with st.expander(f"[{idx}] {row['name']} ({row['code']}) | 涨幅:{row['pct_chg']:.1f}% 量比:{row['vol_ratio']:.1f}"):
+                    with st.expander(f"[{idx}] {row['name']} ({row['code']}) | 涨幅:{row['pct_chg']:.1f}%"):
                         if reasoning: st.caption(f"🧠 脑内推演: {reasoning[:500]}...")
                         st.markdown(final)
-            else: st.warning("未获取到自选股数据")
-                
+            else: st.warning("未获取到有效自选股数据")
+            
+            # 导出 Excel
             st.divider()
-            excel_bytes = export_to_excel_bytes(normal_results, demon_results, defense_results, watchlist_results)
-            if excel_bytes:
-                filename = f"四轨猎手复盘_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
-                st.download_button(label="📥 导出分析结果 Excel", data=excel_bytes, file_name=filename, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
-if not run_analysis:
-    st.info("👈 请在左侧配置参数后点击「🚀 开始全市场扫描」")
+            excel_data = export_to_excel_bytes(normal_results, demon_results, defense_results, watchlist_results)
+            if excel_data:
+                st.download_button(
+                    label="📥 下载四轨制复盘 Excel 报告",
+                    data=excel_data,
+                    file_name=f"四轨制复盘_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
