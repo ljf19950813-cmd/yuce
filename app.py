@@ -36,7 +36,7 @@ CONFIG = {
     "TF_API_KEY": TF_API_KEY,
     "LLM_API_KEY": LLM_API_KEY,
     "LLM_BASE_URL": "https://api.deepseek.com/v1", 
-    "LLM_MODEL": "deepseek-reasoner" 
+    "LLM_MODEL": "deepseek-v4-pro" 
 }
 
 # ================= 2. 客户端安全初始化 =================
