@@ -134,7 +134,6 @@ def get_market_context(tf_client, df):
     market_summary = []
     ratio = 1.0
     try:
-        # 🔧 修复1：将 indices.indices() 改为 indices.items()
         for name, code in indices.items():
             df_k = tf_client.klines.get(code, period="1d", count=5, as_dataframe=True)
             if df_k is not None and len(df_k) >= 2:
@@ -198,8 +197,17 @@ def get_tickflow_data_for_symbols(tf_client, symbols_list):
             vol_today = float(latest.get('volume', 0))
             vol_prev = float(prev.get('volume', 0))
             vol_ratio = vol_today / vol_prev if vol_prev > 0 else 99.0
+            
+            # 获取名称
+            name = tf_code.split('.')[0]
+            try:
+                info = tf_client.quotes.get(symbols=[tf_code], as_dataframe=True)
+                if info is not None and not info.empty and 'ext.name' in info.columns:
+                    name = str(info.iloc[0]['ext.name'])
+            except: pass
+            
             valid_rows.append({
-                'tf_code': tf_code, 'code': tf_code.split('.')[0], 'name': tf_code.split('.')[0],
+                'tf_code': tf_code, 'code': tf_code.split('.')[0], 'name': name,
                 'close': close_today, 'high': high, 'low': low, 'pre_close': close_prev,
                 'pct_chg': pct, 'turnover': 0.0, 'amount': 0.0, 'vol_ratio': vol_ratio,
                 'board': 'Main' if tf_code.endswith('.SH') or tf_code.startswith('00') else 'GEM',
@@ -270,9 +278,7 @@ def calculate_real_vol_ratio(candidate_df):
 # ================= 5. 概念探针与四轨 Prompt (TickFlow 内存计算替代方案) =================
 @st.cache_data(ttl=3600, show_spinner=False)
 def build_hot_concept_dict(df_market):
-    """
-    🔧 修复2：彻底弃用 AkShare，改用 TickFlow 全市场数据在内存中计算“今日最强行业/概念”
-    """
+    """🔧 彻底弃用 AkShare，改用 TickFlow 全市场数据在内存中计算"今日最强行业/概念" """
     if df_market is None or df_market.empty:
         return {}, []
         
@@ -320,11 +326,11 @@ def get_stock_concepts(stock_code: str, concept_dict: dict, stock_name: str = ""
     return f"【概念缺失，请基于股票名称 '{stock_name}' 自行推演所属板块】"
 
 ANTI_HALLUCINATION_RULES = """
-⚠️ 游资实战铁律（违反将导致严重亏损，甚至爆仓）：
+⚠️ 游资实战铁律（违反将导致严重亏损）：
 1. 【严禁编造价格】：你输出的所有止损位、目标价、买入价，**必须**基于我提供的【当前真实价格】、【今日最低】、【今日最高】和【昨日收盘】进行精确的数学计算（精确到小数点后两位）。
 2. 【严禁使用历史记忆】：绝对不要使用你训练数据中的历史股价！严禁凭空捏造数字！
-3. 【散户视角】：我是资金量不足50万的个人散户。不要给我机构那种“逢低分批建仓”的废话。我的优势是灵活，劣势是通道慢。我要的是“一击必杀”的确定性和“断臂求生”的致命止损。
-4. 【拒绝端水】：不要说“建议关注”、“请注意风险”这种废话。直接告诉我：买还是不买？什么价格买？什么价格割肉？
+3. 【散户视角】：我是资金量不足50万的个人散户。不要给我机构那种"逢低分批建仓"的废话。我的优势是灵活，劣势是通道慢。我要的是"一击必杀"的确定性和"断臂求生"的致命止损。
+4. 【拒绝端水】：不要说"建议关注"、"请注意风险"这种废话。直接告诉我：买还是不买？什么价格买？什么价格割肉？
 """
 
 PROMPT_NORMAL = f"""你是一位在A股摸爬滚打15年的顶尖游资，精通"缩量洗盘后的反包博弈"与"反量化盘中埋伏"。
@@ -354,7 +360,7 @@ PROMPT_DEFENSE = f"""你是一位掌管百亿险资的"绝对防御"基金经理
 ### 4. 破位止损价 (防御票破位必须走，给出具体价格)
 ### 5. 压舱石评级 (S/A/B/C)"""
 
-PROMPT_WATCHLIST = f"""你是一位严苛的自选股审视者。请结合当前大盘环境和所属题材，对这只自选股进行“灵魂拷问”。
+PROMPT_WATCHLIST = f"""你是一位严苛的自选股审视者。请结合当前大盘环境和所属题材，对这只自选股进行"灵魂拷问"。
 {ANTI_HALLUCINATION_RULES}
 请务必严格按照以下格式输出：
 ### 1. 趋势与题材审视
@@ -369,7 +375,6 @@ def analyze_with_llm(stock_dict, minute_feature_text, market_context, concept_di
     concept_info = get_stock_concepts(stock_dict.get('code'), concept_dict, stock_dict.get('name'))
     news_context = "【今日无重大突发新闻，请纯粹基于盘面量价、情绪与所属题材进行推演】"
     
-    # 🔧 修复3：大小写统一
     if mode == "demon": system_p = PROMPT_DEMON
     elif mode == "defense": system_p = PROMPT_DEFENSE
     elif mode == "watchlist": system_p = PROMPT_WATCHLIST
@@ -469,83 +474,84 @@ def export_to_excel_bytes(normal_results, demon_results, defense_results, watchl
         return None
 
 # ================= 7. Streamlit Web 主界面 =================
-st.set_page_config(page_title="V19.0 四轨猎魔策略", layout="wide")
-st.title("👑 四轨制猎手 V19.0 (终极实战版)")
+st.set_page_config(page_title="V21.0 四轨猎魔策略", layout="wide")
+st.title("👑 四轨制猎手 V21.0 (终极稳定版)")
 
 with st.sidebar:
-    st.header("⚙️ 参数配置")
-    top_n_normal = st.slider("潜伏轨 TOP N", 1, 20, CONFIG["TOP_N_NORMAL"])
-    top_n_demon = st.slider("恶魔轨 TOP N", 1, 10, CONFIG["TOP_N_DEMON"])
+    st.header("⚙️ 全市场扫描参数")
+    top_n_normal = st.slider("🛡️ 潜伏轨 TOP N", 1, 20, CONFIG["TOP_N_NORMAL"])
+    top_n_demon = st.slider("🐉 恶魔轨 TOP N", 1, 10, CONFIG["TOP_N_DEMON"])
     
     st.divider()
     st.header("👁️ 自选股监控")
     watchlist_input = st.text_area("输入代码 (每行一个或逗号分隔)", value="600519, 000858, 300750", height=150)
     
-    run_analysis = st.button("🚀 开始全市场扫描", type="primary")
+    st.divider()
+    # 🔧 核心改动：拆分为两个独立按钮
+    run_market_scan = st.button("🚀 全市场四轨扫描", type="primary", use_container_width=True)
+    run_watchlist = st.button("👁️ 自选股深度诊断", type="secondary", use_container_width=True)
 
-if run_analysis:
+# ================= 8. 执行逻辑隔离 =================
+if run_market_scan or run_watchlist:
     if not tf or not llm_client:
-        st.error("❌ 客户端初始化失败，请检查 Secrets 配置")
-    else:
-        CONFIG["TOP_N_NORMAL"] = top_n_normal
-        CONFIG["TOP_N_DEMON"] = top_n_demon
+        st.error("❌ 客户端初始化失败，请检查 Secrets 配置 (TF_API_KEY / LLM_API_KEY)")
+        st.stop()
         
-        with st.spinner("🚀 正在获取全市场 A 股日线快照..."):
-            df = get_data_tickflow()
+    CONFIG["TOP_N_NORMAL"] = top_n_normal
+    CONFIG["TOP_N_DEMON"] = top_n_demon
+    
+    # 大盘数据是两种模式都需要的基础数据
+    with st.spinner("🚀 正在获取全市场 A 股日线快照 (用于大盘情绪判断)..."):
+        df = get_data_tickflow()
+        
+    if df is None:
+        st.error("❌ 大盘数据获取失败，无法继续分析")
+        st.stop()
+        
+    market_context, market_ratio = get_market_context(tf, df)
+    st.subheader("🌍 今日大盘与情绪环境")
+    st.text(market_context)
+    
+    # 计算热门行业/概念 (两种模式都需要，用于 AI 提示词)
+    concept_dict, hot_concepts = build_hot_concept_dict(df)
+    if hot_concepts:
+        st.info(f"🎯 今日资金主攻方向 (行业/板块): {', '.join(hot_concepts[:5])}")
+    else:
+        st.warning("⚠️ 行业板块数据获取失败，已降级使用名称推演数据 (不影响核心逻辑)")
+
+    # ================= 模式 A：全市场四轨扫描 =================
+    if run_market_scan:
+        st.info("🛡️ 【轨道一】筛选缩量洗盘猎物...")
+        normal_df = filter_normal_stocks(df)
+        if not normal_df.empty:
+            normal_df = calculate_real_vol_ratio(normal_df)
+            normal_df = normal_df[normal_df['vol_ratio'] <= 0.9].head(CONFIG['TOP_N_NORMAL'])
+        
+        st.info("🐉 【轨道二】扫描主板妖股...")
+        demon_df = filter_demon_stocks(df)
+        if not demon_df.empty:
+            demon_df = calculate_real_vol_ratio(demon_df)
+            demon_df = demon_df.head(CONFIG['TOP_N_DEMON'])
             
-        if df is None:
-            st.error("❌ 数据获取失败")
-        else:
-            market_context, market_ratio = get_market_context(tf, df)
-            st.subheader("🌍 今日大盘与情绪环境")
-            st.text(market_context)
-            
-            with st.spinner("🔥 正在计算今日热门行业/概念 (基于全市场真实交易数据)..."):
-                # 🔧 修复4：传入 df 进行内存计算，彻底弃用 AkShare
-                concept_dict, hot_concepts = build_hot_concept_dict(df)
-                if hot_concepts:
-                    st.info(f"🎯 今日资金主攻方向 (行业/板块): {', '.join(hot_concepts[:5])}")
-                else:
-                    st.warning("⚠️ 行业板块数据获取失败，已降级使用名称推演数据 (不影响核心逻辑)")
-                    
-            st.info("🛡️ 【轨道一】筛选缩量洗盘猎物...")
-            normal_df = filter_normal_stocks(df)
-            if not normal_df.empty:
-                normal_df = calculate_real_vol_ratio(normal_df)
-                normal_df = normal_df[normal_df['vol_ratio'] <= 0.9].head(CONFIG['TOP_N_NORMAL'])
-            
-            st.info("🐉 【轨道二】扫描主板妖股...")
-            demon_df = filter_demon_stocks(df)
-            if not demon_df.empty:
-                demon_df = calculate_real_vol_ratio(demon_df)
-                demon_df = demon_df.head(CONFIG['TOP_N_DEMON'])
+        defense_df = pd.DataFrame()
+        if market_ratio < 0.8: 
+            st.warning("🧊 【轨道三】检测到市场处于【弱势/冰点】，自动激活防御池！")
+            defense_df = filter_defense_stocks(df, tf)
+            if not defense_df.empty:
+                defense_df = calculate_real_vol_ratio(defense_df)
                 
-            defense_df = pd.DataFrame()
-            if market_ratio < 0.8: 
-                st.warning("🧊 【轨道三】检测到市场处于【弱势/冰点】，自动激活防御池！")
-                defense_df = filter_defense_stocks(df, tf)
-                if not defense_df.empty:
-                    defense_df = calculate_real_vol_ratio(defense_df)
-                    
-            st.info("👁️ 【轨道四】获取自选股数据...")
-            watchlist_symbols = [s.strip() for s in re.split(r'[,\n\s]+', watchlist_input) if s.strip()]
-            watchlist_df = get_tickflow_data_for_symbols(tf, watchlist_symbols)
-            if not watchlist_df.empty:
-                watchlist_df = calculate_real_vol_ratio(watchlist_df)
-                    
-            all_codes = []
-            if not normal_df.empty: all_codes.extend(normal_df['tf_code'].tolist())
-            if not demon_df.empty: all_codes.extend(demon_df['tf_code'].tolist())
-            if not defense_df.empty: all_codes.extend(defense_df['tf_code'].tolist())
-            # 🔧 修复5：将 lookup() 改为 tolist()
-            if not watchlist_df.empty: all_codes.extend(watchlist_df['tf_code'].tolist())
-            
-            minute_features = get_minute_features(tf, list(set(all_codes)))
-            normal_results, demon_results, defense_results, watchlist_results = [], [], [], []
-            
-            total_tasks = len(normal_df) + len(demon_df) + len(defense_df) + len(watchlist_df)
-            if total_tasks == 0: st.warning("今日暂无符合四轨条件的标的")
-            
+        all_codes = []
+        if not normal_df.empty: all_codes.extend(normal_df['tf_code'].tolist())
+        if not demon_df.empty: all_codes.extend(demon_df['tf_code'].tolist())
+        if not defense_df.empty: all_codes.extend(defense_df['tf_code'].tolist())
+        
+        minute_features = get_minute_features(tf, list(set(all_codes)))
+        normal_results, demon_results, defense_results = [], [], []
+        
+        total_tasks = len(normal_df) + len(demon_df) + len(defense_df)
+        if total_tasks == 0: 
+            st.warning("今日暂无符合三轨条件的标的")
+        else:
             progress_bar = st.progress(0)
             current_task = 0
             
@@ -573,59 +579,86 @@ if run_analysis:
                     defense_results.append({'row': row, 'reasoning': reasoning, 'final': final})
                     time.sleep(1)
                     
-            if not watchlist_df.empty:
-                for _, row in watchlist_df.iterrows():
-                    current_task += 1
-                    progress_bar.progress(current_task / total_tasks)
-                    reasoning, final = analyze_with_llm(row.to_dict(), minute_features.get(row['tf_code'], ""), market_context, concept_dict, mode="watchlist")
-                    watchlist_results.append({'row': row, 'reasoning': reasoning, 'final': final})
-                    time.sleep(1)
-                    
             progress_bar.empty()
             
-            st.subheader("🛡️ 轨道一：缩量潜伏池")
-            if normal_results:
-                for idx, item in enumerate(normal_results, 1):
-                    row, reasoning, final = item['row'], item['reasoning'], item['final']
-                    with st.expander(f"[{idx}] {row['name']} ({row['code']}) | 涨幅:{row['pct_chg']:.1f}% 换手:{row['turnover']:.1f}%"):
-                        if reasoning: st.caption(f"🧠 脑内推演: {reasoning[:500]}...")
-                        st.markdown(final)
-            else: st.warning("今日暂无符合轨道一条件的标的")
-                
-            st.subheader("🐉 轨道二：主板妖股池")
-            if demon_results:
-                for idx, item in enumerate(demon_results, 1):
-                    row, reasoning, final = item['row'], item['reasoning'], item['final']
-                    with st.expander(f"[{idx}] {row['name']} ({row['code']}) | 涨幅:{row['pct_chg']:.1f}% 换手:{row['turnover']:.1f}%"):
-                        if reasoning: st.caption(f"🧠 脑内推演: {reasoning[:500]}...")
-                        st.markdown(final)
-            else: st.warning("今日暂无符合轨道二条件的标的")
-
-            st.subheader("🧊 轨道三：冰点防御池")
-            if defense_results:
-                for idx, item in enumerate(defense_results, 1):
-                    row, reasoning, final = item['row'], item['reasoning'], item['final']
-                    with st.expander(f"[{idx}] {row['name']} ({row['code']}) | 涨幅:{row['pct_chg']:.1f}% 换手:{row['turnover']:.1f}%"):
-                        if reasoning: st.caption(f"🧠 脑内推演: {reasoning[:500]}...")
-                        st.markdown(final)
-            else: st.info("今日大盘情绪尚可，防御池未激活 (或无符合条件标的)")
-
-            st.subheader("👁️ 轨道四：自选股诊断")
-            if watchlist_results:
-                for idx, item in enumerate(watchlist_results, 1):
-                    row, reasoning, final = item['row'], item['reasoning'], item['final']
-                    with st.expander(f"[{idx}] {row['name']} ({row['code']}) | 涨幅:{row['pct_chg']:.1f}%"):
-                        if reasoning: st.caption(f"🧠 脑内推演: {reasoning[:500]}...")
-                        st.markdown(final)
-            else: st.warning("未获取到有效自选股数据")
+        st.subheader("🛡️ 轨道一：缩量潜伏池")
+        if normal_results:
+            for idx, item in enumerate(normal_results, 1):
+                row, reasoning, final = item['row'], item['reasoning'], item['final']
+                with st.expander(f"[{idx}] {row['name']} ({row['code']}) | 涨幅:{row['pct_chg']:.1f}% 换手:{row['turnover']:.1f}%"):
+                    if reasoning: st.caption(f"🧠 脑内推演: {reasoning[:500]}...")
+                    st.markdown(final)
+        else: st.warning("今日暂无符合轨道一条件的标的")
             
-            # 导出 Excel
+        st.subheader("🐉 轨道二：主板妖股池")
+        if demon_results:
+            for idx, item in enumerate(demon_results, 1):
+                row, reasoning, final = item['row'], item['reasoning'], item['final']
+                with st.expander(f"[{idx}] {row['name']} ({row['code']}) | 涨幅:{row['pct_chg']:.1f}% 换手:{row['turnover']:.1f}%"):
+                    if reasoning: st.caption(f"🧠 脑内推演: {reasoning[:500]}...")
+                    st.markdown(final)
+        else: st.warning("今日暂无符合轨道二条件的标的")
+
+        st.subheader("🧊 轨道三：冰点防御池")
+        if defense_results:
+            for idx, item in enumerate(defense_results, 1):
+                row, reasoning, final = item['row'], item['reasoning'], item['final']
+                with st.expander(f"[{idx}] {row['name']} ({row['code']}) | 涨幅:{row['pct_chg']:.1f}% 换手:{row['turnover']:.1f}%"):
+                    if reasoning: st.caption(f"🧠 脑内推演: {reasoning[:500]}...")
+                    st.markdown(final)
+        else: st.info("今日大盘情绪尚可，防御池未激活 (或无符合条件标的)")
+        
+        # 导出 Excel (仅全市场扫描结果)
+        st.divider()
+        excel_data = export_to_excel_bytes(normal_results, demon_results, defense_results, [])
+        if excel_data:
+            st.download_button(
+                label="📥 下载全市场四轨复盘 Excel 报告",
+                data=excel_data,
+                file_name=f"四轨制复盘_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+
+    # ================= 模式 B：自选股深度诊断 =================
+    if run_watchlist:
+        st.info("👁️ 【自选股】正在获取您的持仓数据...")
+        watchlist_symbols = [s.strip() for s in re.split(r'[,\n\s]+', watchlist_input) if s.strip()]
+        watchlist_df = get_tickflow_data_for_symbols(tf, watchlist_symbols)
+        
+        if not watchlist_df.empty:
+            watchlist_df = calculate_real_vol_ratio(watchlist_df)
+            
+            watch_codes = watchlist_df['tf_code'].tolist()
+            minute_features = get_minute_features(tf, watch_codes)
+            watchlist_results = []
+            
+            total_tasks = len(watchlist_df)
+            progress_bar = st.progress(0)
+            
+            for idx, (_, row) in enumerate(watchlist_df.iterrows()):
+                progress_bar.progress((idx + 1) / total_tasks)
+                reasoning, final = analyze_with_llm(row.to_dict(), minute_features.get(row['tf_code'], ""), market_context, concept_dict, mode="watchlist")
+                watchlist_results.append({'row': row, 'reasoning': reasoning, 'final': final})
+                time.sleep(1)
+                
+            progress_bar.empty()
+            
+            st.subheader("👁️ 自选股深度诊断结果")
+            for idx, item in enumerate(watchlist_results, 1):
+                row, reasoning, final = item['row'], item['reasoning'], item['final']
+                with st.expander(f"[{idx}] {row['name']} ({row['code']}) | 涨幅:{row['pct_chg']:.1f}%"):
+                    if reasoning: st.caption(f"🧠 脑内推演: {reasoning[:500]}...")
+                    st.markdown(final)
+            
+            # 导出 Excel (仅自选股结果)
             st.divider()
-            excel_data = export_to_excel_bytes(normal_results, demon_results, defense_results, watchlist_results)
+            excel_data = export_to_excel_bytes([], [], [], watchlist_results)
             if excel_data:
                 st.download_button(
-                    label="📥 下载四轨制复盘 Excel 报告",
+                    label="📥 下载自选股诊断 Excel 报告",
                     data=excel_data,
-                    file_name=f"四轨制复盘_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                    file_name=f"自选股诊断_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
+        else:
+            st.warning("⚠️ 未获取到有效自选股数据，请检查代码输入是否正确")
