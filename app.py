@@ -5,7 +5,6 @@ import numpy as np
 import pandas as pd
 from openai import OpenAI
 from datetime import datetime, timedelta
-from openpyxl.styles import Font, Alignment, PatternFill
 from io import BytesIO
 import warnings
 import httpx
@@ -248,7 +247,7 @@ def filter_defense_stocks(df, tf_client, market_avg_pct=0.0):
     df = df[~df['name'].str.contains('ST|退', na=False)]
     df = df[df['board'] == 'Main']
     lower_pct = max(0.5, market_avg_pct + 1.0)
-    mask = (df['pct_chg'] >= lower_pct) & (df['pct_pct'] <= 9.5) & \
+    mask = (df['pct_chg'] >= lower_pct) & (df['pct_chg'] <= 9.5) & \
            (df['amount'] >= 150000000) & (df['turnover'] >= 3.0) & (df['turnover'] <= 15.0) & \
            (df['close'] >= 5.0)
     candidates = df[mask].sort_values(by='pct_chg', ascending=False).head(20)
@@ -285,49 +284,33 @@ def calculate_real_vol_ratio(candidate_df):
     candidate_df['vol_ratio'] = real_vol_ratios
     return candidate_df
 
-# ================= 🚀 5. 新增：历史趋势快照 (解决位置盲区) =================
+# ================= 🚀 5. 历史趋势快照 =================
 def get_history_context(tf_client, tf_code):
-    """
-    获取过去 60 天的关键趋势锚点，让 AI 有“位置感”和“趋势感”
-    """
     if not tf_client: return "【历史趋势数据缺失】"
     try:
         df_k = tf_client.klines.get(tf_code, period="1d", count=60, as_dataframe=True)
         if df_k is None or len(df_k) < 20: return "【历史数据不足，无法判断长周期趋势】"
-        
         df_k['close'] = pd.to_numeric(df_k['close'], errors='coerce')
         df_k['high'] = pd.to_numeric(df_k['high'], errors='coerce')
         df_k['low'] = pd.to_numeric(df_k['low'], errors='coerce')
         df_k['volume'] = pd.to_numeric(df_k['volume'], errors='coerce')
-        
         curr_close = df_k.iloc[-1]['close']
         high_60d = df_k['high'].max()
         low_60d = df_k['low'].min()
-        
-        # 1. 位置感计算
         position_pct = (curr_close - low_60d) / (high_60d - low_60d) * 100 if high_60d > low_60d else 50
         pos_desc = "高位 (接近60日新高)" if position_pct > 80 else ("低位 (接近60日新低)" if position_pct < 20 else "中位震荡区")
-        
-        # 2. 趋势感计算 (均线)
         ma5 = df_k['close'].rolling(5).mean().iloc[-1]
         ma20 = df_k['close'].rolling(20).mean().iloc[-1]
         ma60 = df_k['close'].mean()
         trend_desc = "多头排列 (均线向上发散)" if ma5 > ma20 > ma60 else ("空头排列 (均线向下压制)" if ma5 < ma20 < ma60 else "均线缠绕 (方向不明)")
-        
-        # 3. 筹码压力与支撑
         pressure_desc = f"上方强压力: {high_60d:.2f} (60日最高)"
         support_desc = f"下方强支撑: {low_60d:.2f} (60日最低)"
-        
-        # 4. 近期量能异动
         avg_vol_20 = df_k['volume'].tail(20).mean()
         curr_vol = df_k.iloc[-1]['volume']
         vol_mult = curr_vol / avg_vol_20 if avg_vol_20 > 0 else 1.0
-        
-        # 5. 连板/涨停基因检测
         pct_changes = df_k['close'].pct_change() * 100
         limit_ups_60d = (pct_changes > 9.5).sum()
         limit_downs_60d = (pct_changes < -9.5).sum()
-        
         res = f"""
 【历史趋势快照 (过去60天)】
 - 当前坐标: 处于60日区间 {pos_desc} (位置分位: {position_pct:.0f}%)
@@ -340,7 +323,7 @@ def get_history_context(tf_client, tf_code):
     except Exception as e:
         return f"【历史数据获取异常: {e}】"
 
-# ================= 6. 纯净版 Prompt (防幻觉 + 历史增强) =================
+# ================= 6. 纯净版 Prompt =================
 ANTI_HALLUCINATION_RULES = """
 ⚠️ 游资实战铁律（违反将导致严重亏损）：
 1. 【严禁编造价格】：所有止损、目标、买点，**必须**基于我提供的【当前真实价格】、【今日最高/低】和【昨收】进行精确数学计算（精确到分）。
@@ -364,7 +347,6 @@ PROMPT_NORMAL = f"""你是一位在A股摸爬滚打15年的顶尖游资，精通
 PROMPT_DEMON = f"""你是一位A股顶尖的"主板(10%)连板妖股接力"大师。你从不看基本面，只看情绪、筹码和历史股性。
 {ANTI_HALLUCINATION_RULES}
 请务必严格按照以下格式输出：
-### 1. 情绪定性与连板身位 (结合历史涨停基因与今日量价，判断龙头还是杂毛)
 ### 1. 情绪定性与连板身位 (结合历史涨停基因与今日量价，判断龙头还是杂毛)
 ### 2. 筹码断层与爆量风险
 ### 3. 主板接力手法 (必须包含具体打板/半路价格计算过程)
@@ -439,60 +421,90 @@ def get_minute_features(tf_client, tf_codes):
             features_map[tf_code] = "【分时异常】"
     return features_map
 
-# ================= 7. 表格提取与 Excel 导出 =================
-def extract_section(text, keyword):
-    pattern = rf"###\s*\d+\.\s*{keyword}.*?\n(.*?)(?=\n###\s*\d+\.|$)"
-    match = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
-    if match:
-        res = match.group(1).strip()
-        clean_res = res.replace('\n', ' | ').replace('**', '').replace('*', '')
-        return clean_res[:80] + "..." if len(clean_res) > 80 else clean_res
-    return "未提及"
+# ================= 🚀 7. 全新 HTML 报告导出模块 (完美支持长文本与排版) =================
+def simple_md_to_html(md_text):
+    """极简 Markdown 转 HTML (处理标题、加粗、列表、换行)"""
+    if not md_text: return ""
+    html = md_text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+    html = re.sub(r'### (.*?)\n', r'<h3>\1</h3>\n', html)
+    html = re.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', html)
+    html = re.sub(r'^- (.*?)$', r'<li>\1</li>', html, flags=re.MULTILINE)
+    html = re.sub(r'(<li>.*?</li>\n?)+', r'<ul>\g<0></ul>', html, flags=re.DOTALL)
+    html = html.replace('\n\n', '</p><p>').replace('\n', '<br>')
+    return f"<p>{html}</p>"
 
-def export_to_excel_bytes(normal_results, demon_results, defense_results, watchlist_results):
-    all_data = []
-    for item in normal_results:
-        row, final = item['row'], item['final']
-        all_data.append({"轨道": "🛡️ 潜伏池", "股票名称": row['name'], "代码": row['code'], "当前价": row.get('close', ''), "涨幅%": f"{row['pct_chg']:.2f}", "换手%": f"{row['turnover']:.2f}", "量比": f"{row['vol_ratio']:.2f}", "评级": extract_section(final, "猎手评级"), "买点推演": extract_section(final, "反量化买点"), "止损位": extract_section(final, "断臂求生止损位")})
-    for item in demon_results:
-        row, final = item['row'], item['final']
-        all_data.append({"轨道": "🐉 妖股池", "股票名称": row['name'], "代码": row['code'], "当前价": row.get('close', ''), "涨幅%": f"{row['pct_chg']:.2f}", "换手%": f"{row['turnover']:.2f}", "量比": f"{row['vol_ratio']:.2f}", "评级": extract_section(final, "猎手评级"), "买点推演": extract_section(final, "主板接力手法"), "止损位": extract_section(final, "断头铡刀止损")})
-    for item in defense_results:
-        row, final = item['row'], item['final']
-        all_data.append({"轨道": "🔥 逆风池", "股票名称": row['name'], "代码": row['code'], "当前价": row.get('close', ''), "涨幅%": f"{row['pct_chg']:.2f}", "换手%": f"{row['turnover']:.2f}", "量比": f"{row['vol_ratio']:.2f}", "评级": extract_section(final, "逆风评级"), "买点推演": extract_section(final, "稳健突破买点"), "止损位": extract_section(final, "证伪止损价")})
-    for item in watchlist_results:
-        row, final = item['row'], item['final']
-        all_data.append({"轨道": "👁️ 自选股", "股票名称": row['name'], "代码": row['code'], "当前价": row.get('close', ''), "涨幅%": f"{row['pct_chg']:.2f}", "换手%": f"{row['turnover']:.2f}", "量比": f"{row['vol_ratio']:.2f}", "评级": extract_section(final, "去留决断"), "买点推演": extract_section(final, "关键价格锚点"), "止损位": "-"})
-    if not all_data: return None
-    df = pd.DataFrame(all_data)
-    output = BytesIO()
-    try:
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            df.to_excel(writer, index=False, sheet_name='四轨制复盘')
-            worksheet = writer.sheets['四轨制复盘']
-            header_font = Font(color="FFFFFF", bold=True)
-            header_fill = PatternFill(start_color="000000", end_color="000000", fill_type="solid")
-            for cell in worksheet[1]: cell.font = header_font; cell.fill = header_fill; cell.alignment = Alignment(horizontal="center", vertical="center")
-            for column in worksheet.columns:
-                max_length = max((len(str(cell.value)) if cell.value else 0) for cell in column)
-                worksheet.column_dimensions[column[0].column_letter].width = min((max_length + 2) * 1.1, 45)
-        output.seek(0)
-        return output
-    except Exception as e:
-        logging.error(f"❌ Excel 导出失败: {e}")
-        return None
+def export_to_html_report(normal_results, demon_results, defense_results, watchlist_results, market_context, safe_dates):
+    css_style = """
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; max-width: 1000px; margin: 0 auto; padding: 20px; background: #f9f9f9; }
+        .header { text-align: center; border-bottom: 3px solid #2c3e50; padding-bottom: 15px; margin-bottom: 30px; }
+        .header h1 { color: #2c3e50; margin: 0; }
+        .header p { color: #7f8c8d; margin: 5px 0 0; }
+        .market-box { background: #fff; border-left: 5px solid #3498db; padding: 15px; margin-bottom: 30px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); white-space: pre-wrap; }
+        .track-title { background: #2c3e50; color: #fff; padding: 10px 15px; border-radius: 5px 5px 0 0; margin-top: 40px; font-size: 1.2em; font-weight: bold; }
+        .stock-card { background: #fff; border: 1px solid #ddd; border-radius: 0 0 5px 5px; padding: 20px; margin-bottom: 20px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
+        .stock-header { display: flex; justify-content: space-between; border-bottom: 1px dashed #ccc; padding-bottom: 10px; margin-bottom: 15px; }
+        .stock-name { font-size: 1.3em; font-weight: bold; color: #e74c3c; }
+        .stock-code { color: #7f8c8d; font-size: 1.1em; }
+        .stock-metrics { display: flex; gap: 15px; font-size: 0.9em; color: #555; margin-bottom: 15px; background: #f8f9fa; padding: 8px; border-radius: 4px;}
+        .metric-item { padding: 2px 8px; background: #e9ecef; border-radius: 3px; }
+        .analysis-content h3 { color: #2980b9; border-bottom: 1px solid #eee; padding-bottom: 5px; margin-top: 20px; }
+        .analysis-content ul { padding-left: 20px; }
+        .analysis-content li { margin-bottom: 5px; }
+        .analysis-content strong { color: #c0392b; }
+        @media print { body { background: #fff; } .stock-card { break-inside: avoid; } }
+    </style>
+    """
+    
+    html_parts = [f"<!DOCTYPE html><html lang='zh-CN'><head><meta charset='UTF-8'><title>四轨制猎手复盘报告</title>{css_style}</head><body>"]
+    html_parts.append(f"<div class='header'><h1>👑 四轨制猎手实战报告</h1><p>生成时间: {safe_dates['now_str']} | 基准日: {safe_dates['today']}</p></div>")
+    
+    html_parts.append("<h2>🌍 今日大盘与情绪环境</h2>")
+    html_parts.append(f"<div class='market-box'>{market_context}</div>")
+
+    def render_track(track_name, track_emoji, results, mode_type):
+        if not results: return ""
+        track_html = f"<div class='track-title'>{track_emoji} {track_name}</div>"
+        for item in results:
+            row, final = item['row'], item['final']
+            pct_color = "#e74c3c" if row['pct_chg'] >= 0 else "#27ae60"
+            track_html += f"""
+            <div class="stock-card">
+                <div class="stock-header">
+                    <span class="stock-name">{row['name']}</span>
+                    <span class="stock-code">{row['code']} | {row['board']}</span>
+                </div>
+                <div class="stock-metrics">
+                    <span class="metric-item">当前价: {row['close']:.2f}</span>
+                    <span class="metric-item" style="color:{pct_color}">涨幅: {row['pct_chg']:.2f}%</span>
+                    <span class="metric-item">换手: {row['turnover']:.2f}%</span>
+                    <span class="metric-item">量比: {row['vol_ratio']:.2f}</span>
+                    <span class="metric-item">成交额: {row['amount']/100000000:.1f}亿</span>
+                </div>
+                <div class="analysis-content">{simple_md_to_html(final)}</div>
+            </div>
+            """
+        return track_html
+
+    html_parts.append(render_track("轨道一：缩量潜伏池", "🛡️", normal_results, "normal"))
+    html_parts.append(render_track("轨道二：主板妖股池", "🐉", demon_results, "demon"))
+    html_parts.append(render_track("轨道三：逆风突破池", "🔥", defense_results, "defense"))
+    html_parts.append(render_track("自选股深度诊断", "👁️", watchlist_results, "watchlist"))
+    
+    html_parts.append("</body></html>")
+    return "\n".join(html_parts).encode('utf-8')
 
 # ================= 8. Streamlit Web 主界面 =================
-st.set_page_config(page_title="V23.0 四轨猎魔策略", layout="wide")
-st.title("👑 四轨制猎手 V23.0 (历史趋势增强+纯净量价版)")
+st.set_page_config(page_title="V24.0 四轨猎魔策略", layout="wide")
+st.title("👑 四轨制猎手 V24.0 (完美报告排版版)")
 
 safe_dates = get_safe_trade_dates()
 st.caption(f"📅 当前基准交易日: {safe_dates['today']} | 上一交易日: {safe_dates['yesterday']}")
 
 with st.sidebar:
     st.header("⚙️ 全市场扫描参数")
-    top_n_normal = st.slider("🛡️ 潜伏轨 TOP N", 1, 20, CONFIG["TOP_N_NORMAL"])
-    top_n_demon = st.slider("🐉 恶魔轨 TOP N", 1, 10, CONFIG["TOP_N_DEMON"])
+    top_n_normal = st.slider("🛡️ 缩量轨 TOP N", 1, 20, CONFIG["TOP_N_NORMAL"])
+    top_n_demon = st.slider("🐉 妖股轨 TOP N", 1, 10, CONFIG["TOP_N_DEMON"])
     st.divider()
     st.header("👁️ 自选股监控")
     watchlist_input = st.text_area("输入代码 (每行一个或逗号分隔)", value="600519, 000858, 300750", height=150)
@@ -513,6 +525,8 @@ if run_market_scan or run_watchlist:
     market_context, market_ratio = get_market_context(tf, df)
     st.subheader("🌍 今日大盘与情绪环境")
     st.text(market_context)
+
+    normal_results, demon_results, defense_results, watchlist_results = [], [], [], []
 
     if run_market_scan:
         st.info("🛡️ 【轨道一】筛选缩量洗盘猎物...")
@@ -539,8 +553,7 @@ if run_market_scan or run_watchlist:
         if not defense_df.empty: all_codes.extend(defense_df['tf_code'].tolist())
 
         minute_features = get_minute_features(tf, list(set(all_codes)))
-        normal_results, demon_results, defense_results = [], [], []
-
+        
         total_tasks = len(normal_df) + len(demon_df) + len(defense_df)
         if total_tasks == 0: st.warning("今日暂无符合三轨条件的标的")
         else:
@@ -597,9 +610,9 @@ if run_market_scan or run_watchlist:
         else: st.info("今日大盘情绪强势，逆风池未激活 (或无符合条件标的)")
 
         st.divider()
-        excel_data = export_to_excel_bytes(normal_results, demon_results, defense_results, [])
-        if excel_data:
-            st.download_button(label="📥 下载全市场四轨复盘 Excel 报告", data=excel_data, file_name=f"四轨制复盘_{safe_dates['now_str']}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        html_data = export_to_html_report(normal_results, demon_results, defense_results, [], market_context, safe_dates)
+        if html_data:
+            st.download_button(label="📥 下载全市场四轨复盘 HTML 报告 (浏览器打开后可一键打印为PDF)", data=html_data, file_name=f"四轨制复盘_{safe_dates['now_str']}.html", mime="text/html")
 
     if run_watchlist:
         st.info("👁️ 【自选股】正在获取您的持仓数据...")
@@ -609,7 +622,6 @@ if run_market_scan or run_watchlist:
             watchlist_df = calculate_real_vol_ratio(watchlist_df)
             watch_codes = watchlist_df['tf_code'].tolist()
             minute_features = get_minute_features(tf, watch_codes)
-            watchlist_results = []
             total_tasks = len(watchlist_df)
             progress_bar = st.progress(0)
             for idx, (_, row) in enumerate(watchlist_df.iterrows()):
@@ -626,8 +638,8 @@ if run_market_scan or run_watchlist:
                     if reasoning: st.caption(f"🧠 脑内推演: {reasoning[:500]}...")
                     st.markdown(final)
             st.divider()
-            excel_data = export_to_excel_bytes([], [], [], watchlist_results)
-            if excel_data:
-                st.download_button(label="📥 下载自选股诊断 Excel 报告", data=excel_data, file_name=f"自选股诊断_{safe_dates['now_str']}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            html_data = export_to_html_report([], [], [], watchlist_results, market_context, safe_dates)
+            if html_data:
+                st.download_button(label="📥 下载自选股诊断 HTML 报告 (浏览器打开后可一键打印为PDF)", data=html_data, file_name=f"自选股诊断_{safe_dates['now_str']}.html", mime="text/html")
         else:
             st.warning("⚠️ 未获取到有效自选股数据，请检查代码输入是否正确")
