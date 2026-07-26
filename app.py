@@ -416,7 +416,7 @@ def analyze_with_llm(stock_dict, minute_feature_text, market_context, history_co
 - 昨日收盘: {stock_dict.get('pre_close', '0.0')} 元
 """
 
-        user_prompt = f"""【大盘与情绪】:\n{market_context}
+    user_prompt = f"""【大盘与情绪】:\n{market_context}
 【历史趋势快照】:\n{history_context}
 【实时新闻】:\n{news_context}\n{price_info}
 【股票】: {stock_dict.get('name')} ({stock_dict.get('code')}) | {stock_dict.get('board')}
