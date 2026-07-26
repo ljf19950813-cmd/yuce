@@ -60,21 +60,47 @@ if CONFIG["LLM_API_KEY"] != "YOUR_LLM_API_KEY":
     except Exception as e:
         logging.error(f"LLM 客户端初始化失败: {e}")
 
-# ================= 🛡️ 安全日期生成器 =================
+# ================= 🛡️ 安全日期生成器 (次日买入适配版) =================
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_safe_trade_dates():
+    """
+    【次日买入适配版】
+    核心逻辑：无论何时运行，始终锁定"最新一个已收盘的完整交易日"作为 T 日基准。
+    - 15:30 前运行 → 认为今日数据未稳定，T日 = 上一个交易日
+    - 15:30 后运行 → 今日数据已可用，T日 = 今日
+    """
     now = datetime.now()
     current_str = now.strftime('%Y%m%d')
-    is_closed = (now.hour > 15) or (now.hour == 15 and now.minute >= 30)
+    current_time_int = int(now.strftime('%H%M'))
+    
+    # 15:30 为安全阈值，此前认为当日数据可能未完全入库
+    safe_time_threshold = 1530
+    is_data_stable = current_time_int >= safe_time_threshold
+    
     dates = []
     for i in range(20):
         d = now - timedelta(days=i)
-        if d.weekday() < 5: dates.append(d.strftime('%Y%m%d'))
-    if not is_closed and current_str in dates: dates.remove(current_str)
+        if d.weekday() < 5:
+            dates.append(d.strftime('%Y%m%d'))
+    
+    # 如果当日数据未稳定，强制排除今天
+    if not is_data_stable and current_str in dates:
+        dates.remove(current_str)
+    
+    # T日 = 复盘基准日（最新完整交易日）
+    # T+1日 = 次日（即您准备买入的那天）
+    t_day = dates[0] if dates else current_str
+    t_minus_1 = dates[1] if len(dates) > 1 else dates[0]
+    t_minus_2 = dates[2] if len(dates) > 2 else dates[0]
+    last_week = dates[4] if len(dates) > 4 else dates[0]
+    
     return {
-        "today": dates[0] if dates else current_str, "yesterday": dates[1] if len(dates)>1 else dates[0],
-        "day_before": dates[2] if len(dates)>2 else dates[0], "last_week": dates[4] if len(dates)>4 else dates[0],
-        "now_str": now.strftime('%Y%m%d_%H%M')
+        "today": t_day,           # T日（复盘基准日）
+        "yesterday": t_minus_1,   # T-1日
+        "day_before": t_minus_2,  # T-2日
+        "last_week": last_week,
+        "now_str": now.strftime('%Y%m%d_%H%M'),
+        "t_plus_1_label": "次日(T+1)"  # 提示标签
     }
 
 # ================= 3. 数据获取与清洗 =================
@@ -333,33 +359,37 @@ ANTI_HALLUCINATION_RULES = """
 5. 【拒绝端水】：直接告诉我买还是不买？什么价格买？什么价格割肉？
 6. 【数据缺失处理】：如果【今日最高/低】与【当前价】相同，说明数据缺失！**严禁**得出"价格没变过"的结论！必须基于【昨收】和【涨幅】反推波动区间！
 7. 【纯粹量价推演】：严禁提及、猜测或编造该股票的行业、题材、概念！所有分析必须纯粹基于量价结构、筹码博弈、历史趋势与市场情绪。
+8. 【次日买入视角】：明确告知用户当前是基于【T日收盘】复盘，准备在【T+1日（次日）】买入。你的买点、止损点必须考虑次日集合竞价和早盘情绪。
+9. 【条件触发机制】：严禁只给一个固定死价格！必须给出“如果次日高开>2%怎么做”、“如果次日低开或平开怎么做”的条件分支策略。
 """
 
 PROMPT_NORMAL = f"""你是一位在A股摸爬滚打15年的顶尖游资，精通"缩量洗盘后的反包博弈"与"反量化盘中埋伏"。
 {ANTI_HALLUCINATION_RULES}
+
 请务必严格按照以下格式输出：
 ### 1. 盘面语言解读 (结合【历史趋势快照】与今日量价，看透主力意图)
 ### 2. 流动性与量化排雷
-### 3. 反量化买点 (必须包含具体价格计算过程，精确到分)
-### 4. 断臂求生止损位 (必须包含具体价格计算过程)
+### 3. 次日(T+1)竞价与买点策略 (必须分情况讨论：次日高开/平开/低开的应对买点，展示基于今日收盘价和昨收价的计算过程，精确到分)
+### 4. 断臂求生止损位 (基于次日买入后的持仓成本，给出动态止损价计算过程)
 ### 5. 猎手评级与仓位建议 (S/A/B/C)"""
 
-PROMPT_DEMON = f"""你是一位A股顶尖的"主板(10%)连板妖股接力"大师。你从不看基本面，只看情绪、筹码和历史股性。
+PROMPT_DEMON = f"""你是一位在A股摸爬滚打15年的顶尖游资，精通"龙头首阴反包"与"妖股接力情绪博弈"。
 {ANTI_HALLUCINATION_RULES}
+
 请务必严格按照以下格式输出：
-### 1. 情绪定性与连板身位 (结合历史涨停基因与今日量价，判断龙头还是杂毛)
-### 2. 筹码断层与爆量风险
-### 3. 主板接力手法 (必须包含具体打板/半路价格计算过程)
-### 4. 断头铡刀止损 (必须包含具体止损价格计算过程)
+### 1. 妖气指数与龙头信仰 (结合【历史趋势快照】分析连板高度、市场身位及今日盘口语言)
+### 2. 死亡换手与流动性排雷 (结合成交额、换手率分析当前筹码断层风险)
+### 3. 次日(T+1)竞价与买点策略 (必须分情况讨论：次日高开>3%如何抢筹/平开如何半路/低开如何放弃，展示基于今日收盘价和昨收价的计算过程，精确到分)
+### 4. 断臂求生止损位 (基于次日买入后的预估持仓成本，给出动态止损价计算过程)
 ### 5. 猎手评级与仓位建议 (S/A/B/C)"""
 
 PROMPT_DEFENSE = f"""你是一位精通"弱市逆风突破"的A股实战猎手。当前大盘萎靡/冰点，你的任务是在泥沙俱下中寻找"逆市上涨、筹码稳健、即将突破"的真金标的。
 {ANTI_HALLUCINATION_RULES}
 请务必严格按照以下格式输出：
-### 1. 逆风强度与突破逻辑 (结合历史压力位与今日量价背离，分析突破有效性)
+### 1. 逆风强度与突破逻辑 (结合【历史趋势快照】与今日量价背离，分析突破有效性)
 ### 2. 筹码结构与量能健康度
-### 3. 稳健突破买点 (必须包含具体价格计算过程)
-### 4. 证伪止损价 (突破失败必须走，基于关键支撑位给出具体价格计算过程)
+### 3. 次日(T+1)竞价与买点策略 (必须分情况讨论：次日高开如何追/平开如何伏击/低开或急跌如何低吸，展示基于今日收盘价和昨收价的计算过程，精确到分)
+### 4. 断臂求生止损位 (基于次日买入后的预估持仓成本，给出动态止损价计算过程，跌破某关键位必须无条件离场)
 ### 5. 逆风评级与仓位建议 (S/A/B/C)"""
 
 PROMPT_WATCHLIST = f"""你是一位严苛的自选股审视者。请结合当前大盘环境、历史趋势与今日量价，对这只自选股进行"灵魂拷问"。
@@ -386,18 +416,20 @@ def analyze_with_llm(stock_dict, minute_feature_text, market_context, history_co
 - 昨日收盘: {stock_dict.get('pre_close', '0.0')} 元
 """
 
-    user_prompt = f"""【大盘与情绪】:\n{market_context}
+        user_prompt = f"""【大盘与情绪】:\n{market_context}
 【历史趋势快照】:\n{history_context}
 【实时新闻】:\n{news_context}\n{price_info}
 【股票】: {stock_dict.get('name')} ({stock_dict.get('code')}) | {stock_dict.get('board')}
 【数据】: 涨幅 {stock_dict.get('pct_chg', 0):.2f}%, 量比 {stock_dict.get('vol_ratio', 0):.2f}, 成交额 {stock_dict.get('amount', 0)/100000000:.1f}亿, 换手 {stock_dict.get('turnover', 0):.2f}%
-【分时】: {minute_feature_text}"""
+【分时】: {minute_feature_text}
+
+⚠️ 【交易计划】：我将于【明日（T+1日）】进行买入操作。请基于上述T日收盘数据，为我制定明日的集合竞价观察点及盘中条件买入策略。"""
 
     try:
         response = llm_client.chat.completions.create(
             model=CONFIG["LLM_MODEL"],
             messages=[{"role": "system", "content": system_p}, {"role": "user", "content": user_prompt}],
-            max_tokens=3000 
+            max_tokens=4096 
         )
         reasoning = getattr(response.choices[0].message, 'reasoning_content', '')
         final = response.choices[0].message.content
@@ -421,45 +453,93 @@ def get_minute_features(tf_client, tf_codes):
             features_map[tf_code] = "【分时异常】"
     return features_map
 
-# ================= 🚀 7. 全新 HTML 报告导出模块 (完美支持长文本与排版) =================
-def simple_md_to_html(md_text):
-    """极简 Markdown 转 HTML (处理标题、加粗、列表、换行)"""
-    if not md_text: return ""
+# ================= 🚀 7. 增强版 HTML 报告导出模块 (解决内容遗漏与排版错乱) =================
+def robust_md_to_html(md_text):
+    """
+    增强版 Markdown 转 HTML 
+    解决大模型输出不规范导致的列表跨行、标签闭合错误、内容被吞等问题
+    """
+    if not md_text: return "<p>【暂无分析内容】</p>"
+    
+    # 1. 基础 HTML 实体转义，防止 XSS 和标签破坏
     html = md_text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-    html = re.sub(r'### (.*?)\n', r'<h3>\1</h3>\n', html)
+    
+    # 2. 处理标题 (兼容 ###, ##, ####，并处理标题后可能没有换行的情况)
+    html = re.sub(r'^#{1,4}\s+(.*?)$', r'<h3>\1</h3>', html, flags=re.MULTILINE)
+    
+    # 3. 处理加粗和斜体
     html = re.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', html)
-    html = re.sub(r'^- (.*?)$', r'<li>\1</li>', html, flags=re.MULTILINE)
-    html = re.sub(r'(<li>.*?</li>\n?)+', r'<ul>\g<0></ul>', html, flags=re.DOTALL)
-    html = html.replace('\n\n', '</p><p>').replace('\n', '<br>')
-    return f"<p>{html}</p>"
+    html = re.sub(r'\*(.*?)\*', r'<em>\1</em>', html)
+    
+    # 4. 处理列表 (核心优化：支持跨行列表项，避免 <ul> 标签嵌套错乱)
+    lines = html.split('\n')
+    processed_lines = []
+    in_list = False
+    
+    for line in lines:
+        stripped = line.strip()
+        # 匹配以 - 或 * 或数字. 开头的列表项
+        is_list_item = re.match(r'^[-*]\s+(.*)', stripped) or re.match(r'^\d+\.\s+(.*)', stripped)
+        
+        if is_list_item:
+            if not in_list:
+                processed_lines.append('<ul>')
+                in_list = True
+            # 提取列表内容 (去掉前面的 - 或 1.)
+            content = re.sub(r'^[-*]\s+', '', stripped)
+            content = re.sub(r'^\d+\.\s+', '', content)
+            processed_lines.append(f'<li>{content}</li>')
+        else:
+            if in_list:
+                processed_lines.append('</ul>')
+                in_list = False
+            
+            # 处理普通段落和换行
+            if stripped.startswith('<h3>'):
+                processed_lines.append(stripped)
+            elif stripped == '':
+                processed_lines.append('<br>')
+            else:
+                processed_lines.append(f'<p>{stripped}</p>')
+                
+    if in_list:
+        processed_lines.append('</ul>')
+        
+    return '\n'.join(processed_lines)
 
 def export_to_html_report(normal_results, demon_results, defense_results, watchlist_results, market_context, safe_dates):
     css_style = """
     <style>
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; max-width: 1000px; margin: 0 auto; padding: 20px; background: #f9f9f9; }
+        body { font-family: 'Segoe UI', 'Microsoft YaHei', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; max-width: 1000px; margin: 0 auto; padding: 20px; background: #f9f9f9; }
         .header { text-align: center; border-bottom: 3px solid #2c3e50; padding-bottom: 15px; margin-bottom: 30px; }
         .header h1 { color: #2c3e50; margin: 0; }
         .header p { color: #7f8c8d; margin: 5px 0 0; }
-        .market-box { background: #fff; border-left: 5px solid #3498db; padding: 15px; margin-bottom: 30px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); white-space: pre-wrap; }
-        .track-title { background: #2c3e50; color: #fff; padding: 10px 15px; border-radius: 5px 5px 0 0; margin-top: 40px; font-size: 1.2em; font-weight: bold; }
-        .stock-card { background: #fff; border: 1px solid #ddd; border-radius: 0 0 5px 5px; padding: 20px; margin-bottom: 20px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
+        .market-box { background: #fff; border-left: 5px solid #3498db; padding: 15px; margin-bottom: 30px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); white-space: pre-wrap; font-family: monospace; }
+        .track-title { background: #2c3e50; color: #fff; padding: 10px 15px; border-radius: 5px 5px 0 0; margin-top: 40px; font-size: 1.2em; font-weight: bold; page-break-before: always; }
+        .stock-card { background: #fff; border: 1px solid #ddd; border-radius: 0 0 5px 5px; padding: 20px; margin-bottom: 20px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); page-break-inside: avoid; }
         .stock-header { display: flex; justify-content: space-between; border-bottom: 1px dashed #ccc; padding-bottom: 10px; margin-bottom: 15px; }
         .stock-name { font-size: 1.3em; font-weight: bold; color: #e74c3c; }
         .stock-code { color: #7f8c8d; font-size: 1.1em; }
-        .stock-metrics { display: flex; gap: 15px; font-size: 0.9em; color: #555; margin-bottom: 15px; background: #f8f9fa; padding: 8px; border-radius: 4px;}
-        .metric-item { padding: 2px 8px; background: #e9ecef; border-radius: 3px; }
+        .stock-metrics { display: flex; flex-wrap: wrap; gap: 10px; font-size: 0.9em; color: #555; margin-bottom: 15px; background: #f8f9fa; padding: 8px; border-radius: 4px;}
+        .metric-item { padding: 4px 8px; background: #e9ecef; border-radius: 3px; }
         .analysis-content h3 { color: #2980b9; border-bottom: 1px solid #eee; padding-bottom: 5px; margin-top: 20px; }
-        .analysis-content ul { padding-left: 20px; }
-        .analysis-content li { margin-bottom: 5px; }
+        .analysis-content ul { padding-left: 20px; margin: 10px 0; }
+        .analysis-content li { margin-bottom: 8px; }
         .analysis-content strong { color: #c0392b; }
-        @media print { body { background: #fff; } .stock-card { break-inside: avoid; } }
+        .analysis-content p { margin: 8px 0; }
+        @media print { 
+            body { background: #fff; } 
+            .stock-card { break-inside: avoid; page-break-inside: avoid; } 
+            .track-title { break-before: page; page-break-before: always; }
+        }
     </style>
     """
     
     html_parts = [f"<!DOCTYPE html><html lang='zh-CN'><head><meta charset='UTF-8'><title>四轨制猎手复盘报告</title>{css_style}</head><body>"]
-    html_parts.append(f"<div class='header'><h1>👑 四轨制猎手实战报告</h1><p>生成时间: {safe_dates['now_str']} | 基准日: {safe_dates['today']}</p></div>")
+    html_parts.append(f"<div class='header'><h1>👑 四轨制猎手实战报告</h1><p>生成时间: {safe_dates['now_str']} | 基准日(T日): {safe_dates['today']}</p></div>")
     
     html_parts.append("<h2>🌍 今日大盘与情绪环境</h2>")
+    # 大盘环境直接使用 pre-wrap 保持原格式
     html_parts.append(f"<div class='market-box'>{market_context}</div>")
 
     def render_track(track_name, track_emoji, results, mode_type):
@@ -468,6 +548,10 @@ def export_to_html_report(normal_results, demon_results, defense_results, watchl
         for item in results:
             row, final = item['row'], item['final']
             pct_color = "#e74c3c" if row['pct_chg'] >= 0 else "#27ae60"
+            
+            # 使用增强版转换函数
+            analysis_html = robust_md_to_html(final)
+            
             track_html += f"""
             <div class="stock-card">
                 <div class="stock-header">
@@ -478,10 +562,10 @@ def export_to_html_report(normal_results, demon_results, defense_results, watchl
                     <span class="metric-item">当前价: {row['close']:.2f}</span>
                     <span class="metric-item" style="color:{pct_color}">涨幅: {row['pct_chg']:.2f}%</span>
                     <span class="metric-item">换手: {row['turnover']:.2f}%</span>
-                    <span class="metric-item">量比: {row['vol_ratio']:.2f}</span>
+                    <span class="metric-item">量比: {row.get('vol_ratio', 0):.2f}</span>
                     <span class="metric-item">成交额: {row['amount']/100000000:.1f}亿</span>
                 </div>
-                <div class="analysis-content">{simple_md_to_html(final)}</div>
+                <div class="analysis-content">{analysis_html}</div>
             </div>
             """
         return track_html
