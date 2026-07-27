@@ -111,6 +111,7 @@ def get_data_tickflow():
         df = tf.quotes.get(universes=["CN_Equity_A"], as_dataframe=True)
         if df is None or df.empty: return None, 0.0
 
+        # --- 基础列处理 ---
         df['tf_code'] = df['symbol'].astype(str)
         df['code'] = df['tf_code'].str.split('.').str[0]
         df['name'] = df['ext.name'].astype(str) if 'ext.name' in df.columns else '未知'
@@ -128,34 +129,31 @@ def get_data_tickflow():
         amount_arr = safe_col('amount', 0.0)
         vol_arr = safe_col('volume', 0.0)
 
-        # ===== 智能单位转换（终极修复版）=====
-        # 1. 涨跌幅：用中位数判断（排除0值和极端值干扰）
+        # ===== 🔧 核心修复：智能单位转换 =====
+        # 1. 涨跌幅转换：如果中位数绝对值小于0.5（即0.5%），说明是小数格式(0.0xxx)，需乘100
         non_zero_pct = pct_arr[pct_arr != 0]
         if len(non_zero_pct) > 0 and np.median(np.abs(non_zero_pct)) < 0.5:
             pct_chg = pct_arr * 100
         else:
             pct_chg = pct_arr.copy()
-        
-        # 2. 换手率：同理
+
+        # 2. 换手率转换：同理
         non_zero_turnover = turnover_arr[turnover_arr != 0]
-        if len(non_zero_turnover) > 0 and np.median(non_zero_turnover) < 0.5:
+        if len(non_zero_turnover) > 0 and np.median(np.abs(non_zero_turnover)) < 0.5:
             turnover = turnover_arr * 100
         else:
             turnover = turnover_arr.copy()
-        
-        # 3. 成交额：用中位数判断（如果中位数 < 5000万，说明单位是"万元"）
-        non_zero_amount = amount_arr[amount_arr != 0]
-        if len(non_zero_amount) > 0 and np.median(non_zero_amount) < 50000000:
+
+        # 3. 成交额转换：如果均值小于10万，说明单位可能是"万元"，需乘10000转为"元"
+        # (A股平均成交额通常在几亿级别，即 10^8)
+        if np.mean(amount_arr) < 100000: 
             amount = amount_arr * 10000
         else:
             amount = amount_arr.copy()
         
-        # 调试输出（帮你确认转换是否正确）
-        logging.info(f"🔍 转换后 - 涨幅>9%的股票数: {np.sum(pct_chg >= 9.0)}")
-        logging.info(f"🔍 转换后 - 涨幅>5%的股票数: {np.sum(pct_chg >= 5.0)}")
-        logging.info(f"🔍 转换后 - 成交额>1.5亿的股票数: {np.sum(amount >= 150000000)}")
-        logging.info(f"🔍 转换后 - 换手率>5%的股票数: {np.sum(turnover >= 5.0)}")
+        # ===== 结束修复 =====
 
+        # 处理昨收价为0的异常数据
         pre_close_final = pre_close_arr.copy()
         mask_no_pre = pre_close_final == 0
         if mask_no_pre.any():
@@ -165,6 +163,8 @@ def get_data_tickflow():
 
         limit_up = pre_close_final * 1.10
         limit_down = pre_close_final * 0.90
+        
+        # 修正最高/最低价异常
         high_final = np.where((high_arr == 0) | (high_arr < close_arr), np.maximum(close_arr, (close_arr + limit_up) / 2), high_arr)
         low_final = np.where((low_arr == 0) | (low_arr > close_arr), np.minimum(close_arr, (close_arr + limit_down) / 2), low_arr)
 
@@ -177,11 +177,13 @@ def get_data_tickflow():
         df['amount'] = amount
         df['volume'] = vol_arr
 
+        # 板块分类：明确区分主板(Main)与创科(GEM)
         def identify_board(code):
             code = str(code)
-            if code.startswith(('60', '00')): return 'Main'
-            elif code.startswith(('30', '68')): return 'GEM'
+            if code.startswith(('60', '00')): return 'Main'      # 沪市主板+深市主板
+            elif code.startswith(('30', '68')): return 'GEM'     # 创业板+科创板
             return 'Other'
+            
         df['board'] = df['code'].apply(identify_board)
         market_avg_pct = float(df['pct_chg'].mean())
         return df, market_avg_pct
@@ -199,38 +201,53 @@ def get_market_context(tf_client, df):
             df_k = tf_client.klines.get(code, period="1d", count=5, as_dataframe=True)
             if df_k is not None and len(df_k) >= 2:
                 latest, prev = df_k.iloc[-1], df_k.iloc[-2]
+                
+                # 获取收盘价
                 close_today = float(latest.get('close', latest.get('last_price')))
                 close_prev = float(prev.get('close', prev.get('last_price')))
                 pct = (close_today - close_prev) / close_prev * 100 if close_prev > 0 else 0
-                vol_today = float(latest.get('volume', 0))
-                vol_prev = float(prev.get('volume', 0))
-                vol_status = "放量" if vol_today > vol_prev * 1.1 else ("缩量" if vol_prev * 0.9 > vol_today else "平量")
+                
+                # 🔧 核心修复：改用成交额(Amount)判断量能，比Volume更准确反映资金热度
+                amt_today = float(latest.get('amount', 0))
+                amt_prev = float(prev.get('amount', 0))
+                
+                # 如果API没返回amount，回退到用volume判断
+                if amt_today == 0:
+                    amt_today = float(latest.get('volume', 0))
+                    amt_prev = float(prev.get('volume', 0))
+
+                # 设定 5% 的波动阈值，避免微小差异被误判
+                if amt_today > amt_prev * 1.05:
+                    vol_status = "放量"
+                elif amt_today < amt_prev * 0.95:
+                    vol_status = "缩量"
+                else:
+                    vol_status = "平量"
+                    
                 market_summary.append(f"- {name}: 涨幅 {pct:.2f}%, {vol_status}")
                 time.sleep(0.1)
+
         if df is not None and not df.empty:
             up_count = len(df[df['pct_chg'] > 0])
             down_count = len(df[df['pct_chg'] < 0])
             ratio = up_count / max(down_count, 1)
             sentiment = "极度亢奋" if ratio > 3 else ("强势" if ratio > 1.5 else ("均衡" if ratio > 0.8 else ("弱势" if ratio > 0.5 else "极度冰点")))
-            # 主板涨停：60/00开头，涨幅>=9.8%（排除ST的5%涨停）
-            main_mask = df['board'] == 'Main'
-            zt_main = len(df[main_mask & (df['pct_chg'] >= 9.8)])
-            # 创业板/科创板涨停：30/68开头，涨幅>=19.5%
-            gem_mask = df['board'] == 'GEM'
-            zt_gem = len(df[gem_mask & (df['pct_chg'] >= 19.5)])
-            zt_total = zt_main + zt_gem
             
-            # 跌停统计
-            dt_main = len(df[main_mask & (df['pct_chg'] <= -9.8)])
-            dt_gem = len(df[gem_mask & (df['pct_chg'] <= -19.5)])
-            dt_total = dt_main + dt_gem
-            
+            # 统计涨跌停家数 (基于修复后的 pct_chg)
+            zt_main = len(df[(df['board']=='Main') & (df['pct_chg']>=9.8)]) # 主板涨停阈值设为9.8%更稳妥
+            dt_main = len(df[(df['board']=='Main') & (df['pct_chg']<=-9.8)])
             big_loss = len(df[df['pct_chg'] < -7.0])
+            
             market_summary.append(f"- 全市场情绪: 涨{up_count}/跌{down_count}, 涨跌比{ratio:.2f}, 【{sentiment}】")
-            market_summary.append(f"- 赚钱效应: 涨停 {zt_total} 家 (主板{zt_main}+创/科{zt_gem})")
-            if dt_total > 10: market_summary.append(f"⚠️ 极度恶劣行情: 跌停 {dt_total} 家，大面 {big_loss} 家！【退潮期，空仓保平安】")
-            elif dt_total > 3: market_summary.append(f"⚠️ 局部亏钱效应: 跌停 {dt_total} 家。【接力需极度谨慎】")
-            else: market_summary.append(f"- 亏钱效应: 跌停 {dt_total} 家 (风险可控)")
+            market_summary.append(f"- 赚钱效应: 主板涨停 {zt_main} 家")
+            
+            if dt_main > 10: 
+                market_summary.append(f"⚠️ 极度恶劣行情: 跌停 {dt_main} 家，大面 {big_loss} 家！【退潮期，空仓保平安】")
+            elif dt_main > 3: 
+                market_summary.append(f"⚠️ 局部亏钱效应: 跌停 {dt_main} 家。【接力需极度谨慎】")
+            else: 
+                market_summary.append(f"- 亏钱效应: 跌停 {dt_main} 家 (风险可控)")
+                
         return "\n".join(market_summary), ratio
     except Exception as e:
         return f"【大盘数据获取异常: {e}】", 1.0
