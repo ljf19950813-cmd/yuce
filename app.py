@@ -67,13 +67,26 @@ if CONFIG["LLM_API_KEY"] != "YOUR_LLM_API_KEY":
     except Exception as e:
         logging.error(f"LLM 客户端初始化失败: {e}")
 
-# ================= 🆕 新增：Session State 初始化 =================
+# ================= 🆕 增强版：Session State 初始化 (解决 global 语法错误) =================
 if "current_active_prompt" not in st.session_state:
     st.session_state.current_active_prompt = "当前使用默认四轨制 Prompt（未进化）"
 if "analysis_report" not in st.session_state:
     st.session_state.analysis_report = None
 if "prompt_draft" not in st.session_state:
     st.session_state.prompt_draft = None
+
+# 🆕 核心修复：将基础规则存入 session_state，作为后续拼接的基准
+if "base_anti_hallucination_rules" not in st.session_state:
+    st.session_state.base_anti_hallucination_rules = ANTI_HALLUCINATION_RULES
+    
+# 🆕 核心修复：用 session_state 存储当前生效的动态 Prompt，避免使用 global
+if "active_prompts" not in st.session_state:
+    st.session_state.active_prompts = {
+        "normal": PROMPT_NORMAL,
+        "demon": PROMPT_DEMON,
+        "defense": PROMPT_DEFENSE,
+        "watchlist": PROMPT_WATCHLIST
+    }
 # ================= 🆕 结束 =================
 
 
@@ -439,10 +452,12 @@ PROMPT_WATCHLIST = f"""你是一位冷酷且极具纪律性的"账户急救与�
 def analyze_with_llm(stock_dict, minute_feature_text, market_context, history_context, mode="normal"):
     if not llm_client: return "⚠️ 未配置大模型", "⚠️ 无Key"
     news_context = "【请纯粹基于盘面量价与情绪进行推演】"
-    if mode == "demon": system_p = PROMPT_DEMON
-    elif mode == "defense": system_p = PROMPT_DEFENSE
-    elif mode == "watchlist": system_p = PROMPT_WATCHLIST
-    else: system_p = PROMPT_NORMAL
+        # 🆕 核心修复：优先从 session_state 获取进化后的 Prompt，若无则回退到全局默认值
+    active_prompts = st.session_state.get("active_prompts", {})
+    if mode == "demon": system_p = active_prompts.get("demon", PROMPT_DEMON)
+    elif mode == "defense": system_p = active_prompts.get("defense", PROMPT_DEFENSE)
+    elif mode == "watchlist": system_p = active_prompts.get("watchlist", PROMPT_WATCHLIST)
+    else: system_p = active_prompts.get("normal", PROMPT_NORMAL)
     price_info = f"""
 【真实价格锚点 (严禁瞎编，必须基于此计算，展示公式)】
 - 当前价: {stock_dict.get('close', '未知')} 元
@@ -839,15 +854,17 @@ if st.session_state.analysis_report and st.session_state.prompt_draft:
         
         col1, col2 = st.columns(2)
         with col1:
-            if st.button("✅ 确认应用进化补丁", type="primary"):
-                # 将补丁追加到全局 ANTI_HALLUCINATION_RULES
-                global ANTI_HALLUCINATION_RULES
-                ANTI_HALLUCINATION_RULES = ANTI_HALLUCINATION_RULES + "\n\n## 进化补丁 (来自错题分析)\n" + st.session_state.prompt_draft
+                        if st.button("✅ 确认应用进化补丁", type="primary"):
+                # 🆕 核心修复：不再使用 global，而是基于 session_state 动态拼接新 Prompt
+                new_patch = st.session_state.prompt_draft
+                base_rules = st.session_state.base_anti_hallucination_rules
                 
-                # 重新生成所有 Prompt（使补丁生效）
-                global PROMPT_NORMAL, PROMPT_DEMON, PROMPT_DEFENSE, PROMPT_WATCHLIST
-                PROMPT_NORMAL = f"""你是一位在A股摸爬滚打15年的顶尖游资，精通"缩量洗盘后的反包博弈"与"反量化盘中埋伏"。
-{ANTI_HALLUCINATION_RULES}
+                # 拼接进化后的完整规则
+                evolved_rules = base_rules + "\n\n## 进化补丁 (来自错题分析)\n" + new_patch
+                
+                # 重新生成所有 Prompt 并存入 session_state
+                st.session_state.active_prompts["normal"] = f"""你是一位在A股摸爬滚打15年的顶尖游资，精通"缩量洗盘后的反包博弈"与"反量化盘中埋伏"。
+{evolved_rules}
 
 请务必严格按照以下格式输出：
 ### 1. 盘面语言解读 (结合【历史趋势快照】与今日量价，看透主力意图)
@@ -856,8 +873,8 @@ if st.session_state.analysis_report and st.session_state.prompt_draft:
 ### 4. 断臂求生止损位 (基于次日买入后的持仓成本，给出动态止损价计算过程)
 ### 5. 猎手评级与仓位建议 (S/A/B/C)"""
                 
-                PROMPT_DEMON = f"""你是一位在A股摸爬滚打15年的顶尖游资，精通"龙头首阴反包"与"妖股接力情绪博弈"。
-{ANTI_HALLUCINATION_RULES}
+                st.session_state.active_prompts["demon"] = f"""你是一位在A股摸爬滚打15年的顶尖游资，精通"龙头首阴反包"与"妖股接力情绪博弈"。
+{evolved_rules}
 
 请务必严格按照以下格式输出：
 ### 1. 妖气指数与龙头信仰 (结合【历史趋势快照】分析连板高度、市场身位及今日盘口语言)
@@ -866,8 +883,8 @@ if st.session_state.analysis_report and st.session_state.prompt_draft:
 ### 4. 断臂求生止损位 (基于次日买入后的预估持仓成本，给出动态止损价计算过程)
 ### 5. 猎手评级与仓位建议 (S/A/B/C)"""
                 
-                PROMPT_DEFENSE = f"""你是一位精通"弱市逆风突破"的A股实战猎手。当前大盘萎靡/冰点，你的任务是在泥沙俱下中寻找"逆市上涨、筹码稳健、即将突破"的真金标的。
-{ANTI_HALLUCINATION_RULES}
+                st.session_state.active_prompts["defense"] = f"""你是一位精通"弱市逆风突破"的A股实战猎手。当前大盘萎靡/冰点，你的任务是在泥沙俱下中寻找"逆市上涨、筹码稳健、即将突破"的真金标的。
+{evolved_rules}
 请务必严格按照以下格式输出：
 ### 1. 逆风强度与突破逻辑 (结合【历史趋势快照】与今日量价背离，分析突破有效性)
 ### 2. 筹码结构与量能健康度
@@ -875,10 +892,10 @@ if st.session_state.analysis_report and st.session_state.prompt_draft:
 ### 4. 断臂求生止损位 (基于次日买入后的预估持仓成本，给出动态止损价计算过程，跌破某关键位必须无条件离场)
 ### 5. 逆风评级与仓位建议 (S/A/B/C)"""
                 
-                PROMPT_WATCHLIST = f"""你是一位冷酷且极具纪律性的"账户急救与解套操盘手"。你的客户（我）目前持有的自选股全部处于【套牢状态】。
+                st.session_state.active_prompts["watchlist"] = f"""你是一位冷酷且极具纪律性的"账户急救与解套操盘手"。你的客户（我）目前持有的自选股全部处于【套牢状态】。
 你的任务不是寻找买点，而是基于当前的量价结构、趋势和筹码分布，给出最理性的"断臂求生"或"降本解套"方案。拒绝任何情感安慰，只讲残酷真相和操作纪律。
 
-{ANTI_HALLUCINATION_RULES}
+{evolved_rules}
 
 请务必严格按照以下格式输出：
 ### 1. 套牢病情诊断 (结合【历史趋势快照】，分析当前套牢深度、上方筹码压力区密集度，以及趋势是处于下跌中继、缩量筑底还是反弹无力)
@@ -890,10 +907,10 @@ if st.session_state.analysis_report and st.session_state.prompt_draft:
    - 💰 逢低补仓摊薄 (确认底部支撑，给出极限补仓位)
 ### 4. 关键操作锚点 (必须基于真实价格计算：做T的买卖点、补仓的极限支撑位、必须清仓的破位价，展示计算过程，精确到分)"""
                 
-                # 更新状态
+                # 更新UI显示状态
                 st.session_state.current_active_prompt = f"已进化 (补丁应用时间: {datetime.now().strftime('%m-%d %H:%M')})"
                 
-                # 写入 Prompt_History 表
+                # 写入 Prompt_History 表 (此部分保持不变)
                 try:
                     try:
                         hist_df = conn.query(worksheet="Prompt_History")
@@ -904,7 +921,7 @@ if st.session_state.analysis_report and st.session_state.prompt_draft:
                     new_row = pd.DataFrame([{
                         "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
                         "Version": ver_num,
-                        "Prompt_Content": st.session_state.prompt_draft,
+                        "Prompt_Content": new_patch,
                         "Analysis_Report": st.session_state.analysis_report
                     }])
                     
@@ -913,12 +930,7 @@ if st.session_state.analysis_report and st.session_state.prompt_draft:
                 except Exception as e:
                     st.warning(f"⚠️ 补丁已在本次会话生效，但写入云端历史表失败 (请确保建了 Prompt_History 标签页): {e}")
                 
-                st.session_state.analysis_report = None
-                st.session_state.prompt_draft = None
-                st.rerun()
-                
-        with col2:
-            if st.button("❌ 放弃本次进化"):
+                # 清空临时状态并刷新页面
                 st.session_state.analysis_report = None
                 st.session_state.prompt_draft = None
                 st.rerun()
