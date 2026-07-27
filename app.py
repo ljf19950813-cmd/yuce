@@ -128,6 +128,12 @@ def get_data_tickflow():
         amount_arr = safe_col('amount', 0.0)
         vol_arr = safe_col('volume', 0.0)
 
+        # ===== 开始调试 =====
+        print("🔍 原始涨跌幅数据(前5个):", pct_arr[:5])
+        print("🔍 原始涨跌幅最大值:", np.abs(pct_arr).max())
+        print("🔍 原始成交额数据(前5个):", amount_arr[:5] if 'amount_arr' in locals() else "没找到成交额变量")
+        # ===== 结束调试 =====
+        
         pct_chg = pct_arr * 100 if np.abs(pct_arr).max() < 1.5 else pct_arr
         turnover = turnover_arr * 100 if turnover_arr.max() < 1.5 else turnover_arr
         amount = amount_arr * 10000 if amount_arr.mean() < 100000 else amount_arr
