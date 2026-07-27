@@ -60,15 +60,32 @@ if CONFIG["LLM_API_KEY"] != "YOUR_LLM_API_KEY":
     except Exception as e:
         logging.error(f"LLM 客户端初始化失败: {e}")
 
-# ================= 🛡️ 安全日期生成器 (次日买入适配版) =================
-@st.cache_data(ttl=3600, show_spinner=False)
+# ================= 🛡️ 安全日期生成器 (次日买入适配版 - 终极修复) =================
 def get_safe_trade_dates():
     """
     【次日买入适配版】
-    核心逻辑：无论何时运行，始终锁定"最新一个已收盘的完整交易日"作为 T 日基准。
-    - 15:30 前运行 → 认为今日数据未稳定，T日 = 上一个交易日
-    - 15:30 后运行 → 今日数据已可用，T日 = 今日
+    核心逻辑：强制基于系统真实时间推算，抛弃缓存，防止日期错乱。
+    自动跳过周末及2026年法定节假日。
     """
+    # 2026年A股法定节假日休市列表（格式：YYYYMMDD）
+    holidays_2026 = {
+        # 元旦
+        '20260101', '20260102', '20260103', '20260104', 
+        # 春节
+        '20260214', '20260215', '20260216', '20260217', '20260218', '20260219', '20260220', '20260221', '20260222', '20260223', '20260228',
+        # 清明
+        '20260404', '20260405', '20260406',
+        # 劳动节
+        '20260501', '20260502', '20260503', '20260504', '20260505', '20260509',
+        # 端午
+        '20260619', '20260620', '20260621',
+        # 中秋
+        '20260925', '20260926', '20260927',
+        # 国庆
+        '20261001', '20261002', '20261003', '20261004', '20261005', '20261006', '20261007', '20261010'
+    }
+
+    # 强制获取最新系统时间（不使用缓存）
     now = datetime.now()
     current_str = now.strftime('%Y%m%d')
     current_time_int = int(now.strftime('%H%M'))
@@ -77,22 +94,28 @@ def get_safe_trade_dates():
     safe_time_threshold = 1530
     is_data_stable = current_time_int >= safe_time_threshold
     
+    # 往前推20天，排除周末和节假日
     dates = []
     for i in range(20):
         d = now - timedelta(days=i)
-        if d.weekday() < 5:
-            dates.append(d.strftime('%Y%m%d'))
+        d_str = d.strftime('%Y%m%d')
+        # 必须是工作日（周一到周五）且不在节假日列表中
+        if d.weekday() < 5 and d_str not in holidays_2026:
+            dates.append(d_str)
     
-    # 如果当日数据未稳定，强制排除今天
+    # 如果当日数据未稳定（15:30前），强制排除今天
     if not is_data_stable and current_str in dates:
         dates.remove(current_str)
     
     # T日 = 复盘基准日（最新完整交易日）
-    # T+1日 = 次日（即您准备买入的那天）
     t_day = dates[0] if dates else current_str
     t_minus_1 = dates[1] if len(dates) > 1 else dates[0]
     t_minus_2 = dates[2] if len(dates) > 2 else dates[0]
     last_week = dates[4] if len(dates) > 4 else dates[0]
+    
+    # 打印调试日志，方便你在控制台确认系统时间是否正确
+    logging.info(f"⏱️ 系统当前时间: {now.strftime('%Y-%m-%d %H:%M:%S')} | 数据是否稳定: {is_data_stable}")
+    logging.info(f"📅 推算交易日列表: {dates[:5]}")
     
     return {
         "today": t_day,           # T日（复盘基准日）
