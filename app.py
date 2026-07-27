@@ -69,7 +69,7 @@ if CONFIG["LLM_API_KEY"] != "YOUR_LLM_API_KEY":
     except Exception as e:
         logging.error(f"LLM 客户端初始化失败: {e}")
 
-# ================= 🆕 增强版：Session State 初始化 (解决 global 语法错误) =================
+# ================= 🆕 增强版：Session State 初始化 (带安全兜底) =================
 if "current_active_prompt" not in st.session_state:
     st.session_state.current_active_prompt = "当前使用默认四轨制 Prompt（未进化）"
 if "analysis_report" not in st.session_state:
@@ -77,18 +77,27 @@ if "analysis_report" not in st.session_state:
 if "prompt_draft" not in st.session_state:
     st.session_state.prompt_draft = None
 
-# 🆕 核心修复：将基础规则存入 session_state，作为后续拼接的基准
+# 🆕 核心修复：使用 globals().get 安全获取变量，防止因变量未定义导致 NameError 崩溃
 if "base_anti_hallucination_rules" not in st.session_state:
-    st.session_state.base_anti_hallucination_rules = ANTI_HALLUCINATION_RULES
+    # 尝试从全局变量获取，如果找不到（被误删），则使用默认的防幻觉规则
+    default_rules = globals().get("ANTI_HALLUCINATION_RULES", "【核心纪律】\n1. 严禁编造任何财务数据、价格或涨跌幅。\n2. 所有计算必须展示过程，精确到小数点后两位。\n3. 必须结合提供的【历史趋势快照】进行分析，严禁脱离数据空谈。")
+    st.session_state.base_anti_hallucination_rules = default_rules
     
 # 🆕 核心修复：用 session_state 存储当前生效的动态 Prompt，避免使用 global
 if "active_prompts" not in st.session_state:
+    # 同样使用安全获取，防止 PROMPT_XXX 变量丢失
+    p_normal = globals().get("PROMPT_NORMAL", "默认普通模式 Prompt")
+    p_demon = globals().get("PROMPT_DEMON", "默认妖股模式 Prompt")
+    p_defense = globals().get("PROMPT_DEFENSE", "默认防守模式 Prompt")
+    p_watchlist = globals().get("PROMPT_WATCHLIST", "默认自选股/套牢急救 Prompt")
+    
     st.session_state.active_prompts = {
-        "normal": PROMPT_NORMAL,
-        "demon": PROMPT_DEMON,
-        "defense": PROMPT_DEFENSE,
-        "watchlist": PROMPT_WATCHLIST
+        "normal": p_normal,
+        "demon": p_demon,
+        "defense": p_defense,
+        "watchlist": p_watchlist
     }
+# ================= 🆕 结束 =================
 # ================= 🆕 结束 =================
 
 
