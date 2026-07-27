@@ -7,3 +7,4 @@ pandas
 openpyxl
 prettytable
 numpy
+gspread
