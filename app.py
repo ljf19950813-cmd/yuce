@@ -421,13 +421,20 @@ PROMPT_DEFENSE = f"""你是一位精通"弱市逆风突破"的A股实战猎手�
 ### 4. 断臂求生止损位 (基于次日买入后的预估持仓成本，给出动态止损价计算过程，跌破某关键位必须无条件离场)
 ### 5. 逆风评级与仓位建议 (S/A/B/C)"""
 
-PROMPT_WATCHLIST = f"""你是一位严苛的自选股审视者。请结合当前大盘环境、历史趋势与今日量价，对这只自选股进行"灵魂拷问"。
+PROMPT_WATCHLIST = f"""你是一位冷酷且极具纪律性的"账户急救与解套操盘手"。你的客户（我）目前持有的自选股全部处于【套牢状态】。
+你的任务不是寻找买点，而是基于当前的量价结构、趋势和筹码分布，给出最理性的"断臂求生"或"降本解套"方案。拒绝任何情感安慰，只讲残酷真相和操作纪律。
+
 {ANTI_HALLUCINATION_RULES}
+
 请务必严格按照以下格式输出：
-### 1. 趋势与量价审视 (结合【历史趋势快照】分析当前是多头/空头/震荡，以及趋势健康度)
-### 2. 量价背离排雷
-### 3. 去留决断 (明确给出：加仓/持有/减仓/清仓)
-### 4. 关键价格锚点 (必须基于真实价格与历史高低点计算出具体的支撑/压力位，展示计算过程)"""
+### 1. 套牢病情诊断 (结合【历史趋势快照】，分析当前套牢深度、上方筹码压力区密集度，以及趋势是处于下跌中继、缩量筑底还是反弹无力)
+### 2. 盘面语言与反弹动能 (分析今日量价结构，判断当前是否有做T（高抛低吸）的空间，或者是否出现了破位下杀的致命信号)
+### 3. 账户急救决断 (必须从以下四个选项中明确给出一个，严禁模棱两可！：
+   - 🩸 果断割肉 (趋势彻底走坏，反弹即卖)
+   - 🛌 卧倒装死 (深度套牢且缩量见底，不宜再割，等待周期)
+   - 🔄 高抛低吸做T (有震荡空间，给出明确的日内/波段做T差价目标)
+   - 💰 逢低补仓摊薄 (确认底部支撑，给出极限补仓位)
+### 4. 关键操作锚点 (必须基于真实价格计算：做T的买卖点、补仓的极限支撑位、必须清仓的破位价，展示计算过程，精确到分)"""
 
 def analyze_with_llm(stock_dict, minute_feature_text, market_context, history_context, mode="normal"):
     if not llm_client: return "⚠️ 未配置大模型", "⚠️ 无Key"
@@ -868,13 +875,20 @@ if st.session_state.analysis_report and st.session_state.prompt_draft:
 ### 4. 断臂求生止损位 (基于次日买入后的预估持仓成本，给出动态止损价计算过程，跌破某关键位必须无条件离场)
 ### 5. 逆风评级与仓位建议 (S/A/B/C)"""
                 
-                PROMPT_WATCHLIST = f"""你是一位严苛的自选股审视者。请结合当前大盘环境、历史趋势与今日量价，对这只自选股进行"灵魂拷问"。
+                PROMPT_WATCHLIST = f"""你是一位冷酷且极具纪律性的"账户急救与解套操盘手"。你的客户（我）目前持有的自选股全部处于【套牢状态】。
+你的任务不是寻找买点，而是基于当前的量价结构、趋势和筹码分布，给出最理性的"断臂求生"或"降本解套"方案。拒绝任何情感安慰，只讲残酷真相和操作纪律。
+
 {ANTI_HALLUCINATION_RULES}
+
 请务必严格按照以下格式输出：
-### 1. 趋势与量价审视 (结合【历史趋势快照】分析当前是多头/空头/震荡，以及趋势健康度)
-### 2. 量价背离排雷
-### 3. 去留决断 (明确给出：加仓/持有/减仓/清仓)
-### 4. 关键价格锚点 (必须基于真实价格与历史高低点计算出具体的支撑/压力位，展示计算过程)"""
+### 1. 套牢病情诊断 (结合【历史趋势快照】，分析当前套牢深度、上方筹码压力区密集度，以及趋势是处于下跌中继、缩量筑底还是反弹无力)
+### 2. 盘面语言与反弹动能 (分析今日量价结构，判断当前是否有做T（高抛低吸）的空间，或者是否出现了破位下杀的致命信号)
+### 3. 账户急救决断 (必须从以下四个选项中明确给出一个，严禁模棱两可！：
+   - 🩸 果断割肉 (趋势彻底走坏，反弹即卖)
+   - 🛌 卧倒装死 (深度套牢且缩量见底，不宜再割，等待周期)
+   - 🔄 高抛低吸做T (有震荡空间，给出明确的日内/波段做T差价目标)
+   - 💰 逢低补仓摊薄 (确认底部支撑，给出极限补仓位)
+### 4. 关键操作锚点 (必须基于真实价格计算：做T的买卖点、补仓的极限支撑位、必须清仓的破位价，展示计算过程，精确到分)"""
                 
                 # 更新状态
                 st.session_state.current_active_prompt = f"已进化 (补丁应用时间: {datetime.now().strftime('%m-%d %H:%M')})"
@@ -1036,11 +1050,14 @@ if run_market_scan or run_watchlist:
                 watchlist_results.append({'row': row, 'reasoning': reasoning, 'final': final})
                 time.sleep(1)
             progress_bar.empty()
-            st.subheader("👁️ 自选股深度诊断结果")
+            st.subheader("🚑 自选股套牢急救诊断书")
+            st.warning("⚠️ **急救原则**：截断亏损，让利润奔跑。不要在下跌趋势中盲目补仓接飞刀！")
             for idx, item in enumerate(watchlist_results, 1):
                 row, reasoning, final = item['row'], item['reasoning'], item['final']
-                with st.expander(f"[{idx}] {row['name']} ({row['code']}) | 涨幅:{row['pct_chg']:.1f}%"):
-                    if reasoning: st.caption(f"🧠 脑内推演: {reasoning[:500]}...")
+                # 增加跌幅颜色高亮
+                pct_color = "red" if row['pct_chg'] < 0 else "green"
+                with st.expander(f"🩸 [{idx}] {row['name']} ({row['code']}) | 当前价:{row['close']:.2f} | 今日涨幅: :{pct_color}[{row['pct_chg']:.1f}%]"):
+                    if reasoning: st.caption(f"🧠 操盘手脑内推演: {reasoning[:500]}...")
                     st.markdown(final)
             st.divider()
             html_data = export_to_html_report([], [], [], watchlist_results, market_context, safe_dates)
