@@ -1,3 +1,10 @@
+# ================= 0. 云端数据库初始化 (Google Sheets) =================
+# 确保你的 requirements.txt 里有: streamlit>=1.28.0 (官方自带 gsheets 支持)
+try:
+    conn = st.connection("gsheets", type="gsheets")
+except Exception as e:
+    logging.warning(f"Google Sheets 连接失败，回测功能将禁用: {e}")
+    conn = None
 import logging
 import time
 import re
@@ -653,12 +660,127 @@ def export_to_html_report(normal_results, demon_results, defense_results, watchl
     html_parts.append("</body></html>")
     return "\n".join(html_parts).encode('utf-8')
 
+# ================= 💀 核心功能：AI 策略“事后验尸”与数据记录 =================
+
+def save_today_predictions(normal_res, demon_res, defense_res, safe_dates):
+    """
+    功能：每天收盘后，把 AI 给出的买卖点存入 Google Sheets，留待明天验尸
+    """
+    if not conn: return
+    
+    all_results = []
+    for res_list, track_name in [(normal_res, "缩量潜伏"), (demon_res, "主板妖股"), (defense_res, "逆风突破")]:
+        for item in res_list:
+            row = item['row']
+            final_text = item['final']
+            
+            # 使用正则从 AI 回复中提取关键价格 (这里做了简化，你可以根据 AI 实际输出格式微调正则)
+            # 匹配类似 "买点: 10.50" 或 "止损: 9.80"
+            buy_match = re.search(r'(?:买点|买入).*?(\d+\.\d{2})', final_text)
+            stop_match = re.search(r'(?:止损|割肉).*?(\d+\.\d{2})', final_text)
+            
+            all_results.append({
+                "日期": safe_dates['today'],
+                "股票名称": row['name'],
+                "代码": row['code'],
+                "轨道": track_name,
+                "T日收盘": round(row['close'], 2),
+                "AI建议买点": float(buy_match.group(1)) if buy_match else 0.0,
+                "AI建议止损": float(stop_match.group(1)) if stop_match else 0.0,
+                # 下面三个字段今天留空，明天运行程序时自动填入
+                "T+1日最高": None,
+                "T+1日最低": None,
+                "T+1日收盘": None,
+                "验尸结果": "待验尸"
+            })
+            
+    if all_results:
+        df_to_save = pd.DataFrame(all_results)
+        try:
+            # 将数据追加到 Google Sheets (worksheet 名字默认叫 Sheet1)
+            conn.update(worksheet="Sheet1", data=df_to_save, append=True)
+            st.success(f"✅ 已将今日 {len(all_results)} 条 AI 策略存入云端数据库，明日自动验尸！")
+        except Exception as e:
+            st.error(f"❌ 存入 Google Sheets 失败: {e}")
+
+def run_autopsy(safe_dates):
+    """
+    功能：每次运行程序时，自动检查云端表格里“待验尸”的记录，
+    获取它们今天的真实走势，计算胜率并更新表格。
+    """
+    if not conn: return
+    
+    try:
+        # 1. 读取云端所有历史记录
+        df_history = conn.query(worksheet="Sheet1")
+        if df_history is None or df_history.empty: return
+        
+        # 2. 筛选出昨天（或之前）还没有验尸的记录
+        pending_rows = df_history[df_history['验尸结果'] == '待验尸'].copy()
+        if pending_rows.empty: return
+        
+        st.info(f"🔍 检测到 {len(pending_rows)} 条历史 AI 策略，正在进行事后验尸...")
+        
+        # 3. 获取这些股票今天的真实数据 (复用你现有的 get_tickflow_data_for_symbols 函数)
+        symbols_to_check = pending_rows['代码'].unique().tolist()
+        today_real_data = get_tickflow_data_for_symbols(tf, symbols_to_check)
+        
+        # 4. 逐个比对，计算盈亏
+        updated_indices = []
+        for idx, row in pending_rows.iterrows():
+            code = row['代码']
+            real_row = today_real_data[today_real_data['code'] == code]
+            
+            if not real_row.empty:
+                real = real_row.iloc[0]
+                t1_high = real['high']
+                t1_low = real['low']
+                t1_close = real['close']
+                
+                # 验尸逻辑：
+                # 假设我们在 AI 建议的买点买入，看看盘中最高有没有达到止盈位，或者最低有没有跌破止损位
+                ai_buy = row['AI建议买点']
+                ai_stop = row['AI建议止损']
+                
+                result = "数据不足"
+                if ai_buy > 0 and ai_stop > 0:
+                    if t1_low <= ai_stop:
+                        result = f"❌ 爆头止损 (最低{t1_low:.2f}破止损{ai_stop:.2f})"
+                    elif t1_high >= ai_buy * 1.05: # 假设赚了5%算大肉
+                        result = f"🏆 大肉止盈 (最高{t1_high:.2f})"
+                    elif t1_close > ai_buy:
+                        result = f"✅ 浮盈收盘 (收{t1_close:.2f})"
+                    else:
+                        result = f"⚠️ 阴跌套牢 (收{t1_close:.2f})"
+                
+                # 更新 DataFrame
+                df_history.at[idx, 'T+1日最高'] = round(t1_high, 2)
+                df_history.at[idx, 'T+1日最低'] = round(t1_low, 2)
+                df_history.at[idx, 'T+1日收盘'] = round(t1_close, 2)
+                df_history.at[idx, '验尸结果'] = result
+                updated_indices.append(idx)
+                
+        # 5. 把更新后的完整表格，覆盖写回 Google Sheets
+        if updated_indices:
+            conn.update(worksheet="Sheet1", data=df_history)
+            
+            # 统计一下整体胜率
+            completed = df_history[df_history['验尸结果'] != '待验尸']
+            win_rate = len(completed[completed['验尸结果'].str.contains('大肉|浮盈', na=False)]) / max(len(completed), 1) * 100
+            st.success(f"💀 验尸完毕！AI 历史总胜率: **{win_rate:.1f}%** (共 {len(completed)} 笔)")
+            
+    except Exception as e:
+        st.warning(f"验尸过程出现异常 (不影响今日复盘): {e}")
+        
 # ================= 8. Streamlit Web 主界面 =================
 st.set_page_config(page_title="V24.0 四轨猎魔策略", layout="wide")
 st.title("👑 四轨制猎手 V24.0 (完美报告排版版)")
 
 safe_dates = get_safe_trade_dates()
 st.caption(f"📅 当前基准交易日: {safe_dates['today']} | 上一交易日: {safe_dates['yesterday']}")
+
+# 🌟 每次打开应用，第一件事：自动验尸昨天的记录！
+run_autopsy(safe_dates)
 
 with st.sidebar:
     st.header("⚙️ 全市场扫描参数")
@@ -714,7 +836,8 @@ if run_market_scan or run_watchlist:
         minute_features = get_minute_features(tf, list(set(all_codes)))
         
         total_tasks = len(normal_df) + len(demon_df) + len(defense_df)
-        if total_tasks == 0: st.warning("今日暂无符合三轨条件的标的")
+        if total_tasks == 0: 
+            st.warning("今日暂无符合三轨条件的标的")
         else:
             progress_bar = st.progress(0)
             current_task = 0
@@ -741,6 +864,17 @@ if run_market_scan or run_watchlist:
                     time.sleep(1)
             progress_bar.empty()
 
+            # ================= 🔽 插入点二：保存预测结果到 Google Sheets 🔽 =================
+            # 位置：AI分析循环刚结束，页面渲染展示之前
+            # 作用：将今天生成的完整策略持久化到云端，供后续“事后验尸”读取
+            try:
+                save_today_predictions(normal_results, demon_results, defense_results, safe_dates)
+            except Exception as e:
+                logging.error(f"保存今日预测到 Google Sheets 失败: {e}")
+                st.warning(f"⚠️ 今日预测结果未能成功写入云端表格，但不影响本次查看: {e}")
+            # ================= 🔼 插入结束 🔼 =================
+
+        # 以下为原有的页面渲染展示逻辑，保持不变
         st.subheader("🛡️ 轨道一：缩量潜伏池")
         if normal_results:
             for idx, item in enumerate(normal_results, 1):
