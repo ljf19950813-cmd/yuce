@@ -1,9 +1,4 @@
-# ================= 0. 云端数据库初始化 (Google Sheets) =================
-try:
-    conn = st.connection("gsheets", type="gsheets")
-except Exception as e:
-    logging.warning(f"Google Sheets 连接失败，回测功能将禁用: {e}")
-    conn = None
+# ================= 最先执行：导入所有依赖 =================
 import logging
 import time
 import re
@@ -23,6 +18,13 @@ except ImportError:
     TickFlow = None
 
 warnings.filterwarnings("ignore")
+
+# ================= 0. 云端数据库初始化 (Google Sheets) =================
+try:
+    conn = st.connection("gsheets", type="gsheets")
+except Exception as e:
+    logging.warning(f"Google Sheets 连接失败，回测功能将禁用: {e}")
+    conn = None
 
 # ================= 1. 全局配置 =================
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S')
