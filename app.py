@@ -854,16 +854,16 @@ if st.session_state.analysis_report and st.session_state.prompt_draft:
         
         col1, col2 = st.columns(2)
         with col1:
-                        if st.button("✅ 确认应用进化补丁", type="primary"):
-                # 🆕 核心修复：不再使用 global，而是基于 session_state 动态拼接新 Prompt
-                new_patch = st.session_state.prompt_draft
-                base_rules = st.session_state.base_anti_hallucination_rules
-                
-                # 拼接进化后的完整规则
-                evolved_rules = base_rules + "\n\n## 进化补丁 (来自错题分析)\n" + new_patch
-                
-                # 重新生成所有 Prompt 并存入 session_state
-                st.session_state.active_prompts["normal"] = f"""你是一位在A股摸爬滚打15年的顶尖游资，精通"缩量洗盘后的反包博弈"与"反量化盘中埋伏"。
+                if st.button("✅ 确认应用进化补丁", type="primary"):
+                    # 🆕 核心修复：不再使用 global，而是基于 session_state 动态拼接新 Prompt
+                    new_patch = st.session_state.prompt_draft
+                    base_rules = st.session_state.base_anti_hallucination_rules
+                    
+                    # 拼接进化后的完整规则
+                    evolved_rules = base_rules + "\n\n## 进化补丁 (来自错题分析)\n" + new_patch
+                    
+                    # 重新生成所有 Prompt 并存入 session_state
+                    st.session_state.active_prompts["normal"] = f"""你是一位在A股摸爬滚打15年的顶尖游资，精通"缩量洗盘后的反包博弈"与"反量化盘中埋伏"。
 {evolved_rules}
 
 请务必严格按照以下格式输出：
@@ -872,8 +872,8 @@ if st.session_state.analysis_report and st.session_state.prompt_draft:
 ### 3. 次日(T+1)竞价与买点策略 (必须分情况讨论：次日高开/平开/低开的应对买点，展示基于今日收盘价和昨收价的计算过程，精确到分)
 ### 4. 断臂求生止损位 (基于次日买入后的持仓成本，给出动态止损价计算过程)
 ### 5. 猎手评级与仓位建议 (S/A/B/C)"""
-                
-                st.session_state.active_prompts["demon"] = f"""你是一位在A股摸爬滚打15年的顶尖游资，精通"龙头首阴反包"与"妖股接力情绪博弈"。
+                    
+                    st.session_state.active_prompts["demon"] = f"""你是一位在A股摸爬滚打15年的顶尖游资，精通"龙头首阴反包"与"妖股接力情绪博弈"。
 {evolved_rules}
 
 请务必严格按照以下格式输出：
@@ -882,8 +882,8 @@ if st.session_state.analysis_report and st.session_state.prompt_draft:
 ### 3. 次日(T+1)竞价与买点策略 (必须分情况讨论：次日高开>3%如何抢筹/平开如何半路/低开如何放弃，展示基于今日收盘价和昨收价的计算过程，精确到分)
 ### 4. 断臂求生止损位 (基于次日买入后的预估持仓成本，给出动态止损价计算过程)
 ### 5. 猎手评级与仓位建议 (S/A/B/C)"""
-                
-                st.session_state.active_prompts["defense"] = f"""你是一位精通"弱市逆风突破"的A股实战猎手。当前大盘萎靡/冰点，你的任务是在泥沙俱下中寻找"逆市上涨、筹码稳健、即将突破"的真金标的。
+                    
+                    st.session_state.active_prompts["defense"] = f"""你是一位精通"弱市逆风突破"的A股实战猎手。当前大盘萎靡/冰点，你的任务是在泥沙俱下中寻找"逆市上涨、筹码稳健、即将突破"的真金标的。
 {evolved_rules}
 请务必严格按照以下格式输出：
 ### 1. 逆风强度与突破逻辑 (结合【历史趋势快照】与今日量价背离，分析突破有效性)
@@ -891,8 +891,8 @@ if st.session_state.analysis_report and st.session_state.prompt_draft:
 ### 3. 次日(T+1)竞价与买点策略 (必须分情况讨论：次日高开如何追/平开如何伏击/低开或急跌如何低吸，展示基于今日收盘价和昨收价的计算过程，精确到分)
 ### 4. 断臂求生止损位 (基于次日买入后的预估持仓成本，给出动态止损价计算过程，跌破某关键位必须无条件离场)
 ### 5. 逆风评级与仓位建议 (S/A/B/C)"""
-                
-                st.session_state.active_prompts["watchlist"] = f"""你是一位冷酷且极具纪律性的"账户急救与解套操盘手"。你的客户（我）目前持有的自选股全部处于【套牢状态】。
+                    
+                    st.session_state.active_prompts["watchlist"] = f"""你是一位冷酷且极具纪律性的"账户急救与解套操盘手"。你的客户（我）目前持有的自选股全部处于【套牢状态】。
 你的任务不是寻找买点，而是基于当前的量价结构、趋势和筹码分布，给出最理性的"断臂求生"或"降本解套"方案。拒绝任何情感安慰，只讲残酷真相和操作纪律。
 
 {evolved_rules}
@@ -906,35 +906,34 @@ if st.session_state.analysis_report and st.session_state.prompt_draft:
    - 🔄 高抛低吸做T (有震荡空间，给出明确的日内/波段做T差价目标)
    - 💰 逢低补仓摊薄 (确认底部支撑，给出极限补仓位)
 ### 4. 关键操作锚点 (必须基于真实价格计算：做T的买卖点、补仓的极限支撑位、必须清仓的破位价，展示计算过程，精确到分)"""
-                
-                # 更新UI显示状态
-                st.session_state.current_active_prompt = f"已进化 (补丁应用时间: {datetime.now().strftime('%m-%d %H:%M')})"
-                
-                # 写入 Prompt_History 表 (此部分保持不变)
-                try:
-                    try:
-                        hist_df = conn.query(worksheet="Prompt_History")
-                        ver_num = f"v1.{len(hist_df)}" if hist_df is not None and not hist_df.empty else "v1.0"
-                    except:
-                        ver_num = "v1.0"
-                        
-                    new_row = pd.DataFrame([{
-                        "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                        "Version": ver_num,
-                        "Prompt_Content": new_patch,
-                        "Analysis_Report": st.session_state.analysis_report
-                    }])
                     
-                    conn.update(worksheet="Prompt_History", data=new_row, append=True)
-                    st.success(f"🎉 进化成功！{ver_num} 补丁已全局生效，下次扫描将使用新规则。")
-                except Exception as e:
-                    st.warning(f"⚠️ 补丁已在本次会话生效，但写入云端历史表失败 (请确保建了 Prompt_History 标签页): {e}")
-                
-                # 清空临时状态并刷新页面
-                st.session_state.analysis_report = None
-                st.session_state.prompt_draft = None
-                st.rerun()
-
+                    # 更新UI显示状态
+                    st.session_state.current_active_prompt = f"已进化 (补丁应用时间: {datetime.now().strftime('%m-%d %H:%M')})"
+                    
+                    # 写入 Prompt_History 表
+                    try:
+                        try:
+                            hist_df = conn.query(worksheet="Prompt_History")
+                            ver_num = f"v1.{len(hist_df)}" if hist_df is not None and not hist_df.empty else "v1.0"
+                        except Exception:
+                            ver_num = "v1.0"
+                            
+                        new_row = pd.DataFrame([{
+                            "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                            "Version": ver_num,
+                            "Prompt_Content": new_patch,
+                            "Analysis_Report": st.session_state.analysis_report
+                        }])
+                        
+                        conn.update(worksheet="Prompt_History", data=new_row, append=True)
+                        st.success(f"🎉 进化成功！{ver_num} 补丁已全局生效，下次扫描将使用新规则。")
+                    except Exception as e:
+                        st.warning(f"⚠️ 补丁已在本次会话生效，但写入云端历史表失败 (请确保建了 Prompt_History 标签页): {e}")
+                    
+                    # 清空临时状态并刷新页面
+                    st.session_state.analysis_report = None
+                    st.session_state.prompt_draft = None
+                    st.rerun()
 
 # ================= 9. 执行逻辑隔离 =================
 if run_market_scan or run_watchlist:
