@@ -20,11 +20,13 @@ except ImportError:
 warnings.filterwarnings("ignore")
 
 # ================= 0. 云端数据库初始化 (Google Sheets) =================
+conn = None
 try:
     conn = st.connection("gsheets", type="gsheets")
+    if conn is None:
+        st.error("❌ Google Sheets 连接对象为空！请检查 Streamlit Secrets 配置。")
 except Exception as e:
-    logging.warning(f"Google Sheets 连接失败，回测功能将禁用: {e}")
-    conn = None
+    st.error(f"❌ Google Sheets 连接失败: {e}。请检查 .streamlit/secrets.toml 配置。")
 
 # ================= 1. 全局配置 =================
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S')
@@ -613,9 +615,10 @@ def export_to_html_report(normal_results, demon_results, defense_results, watchl
 def save_today_predictions(normal_res, demon_res, defense_res, safe_dates):
     """
     功能：每天收盘后，把 AI 给出的买卖点存入 Google Sheets，留待明天验尸
-    🆕 新增：同时保存 AI 的完整预测理由，供后续"错题本"使用
     """
-    if not conn: return
+    if not conn:
+        st.error("❌ 无法保存：Google Sheets 未连接！请检查 Secrets 或网络。")
+        return
     
     all_results = []
     for res_list, track_name in [(normal_res, "缩量潜伏"), (demon_res, "主板妖股"), (defense_res, "逆风突破")]:
@@ -623,8 +626,9 @@ def save_today_predictions(normal_res, demon_res, defense_res, safe_dates):
             row = item['row']
             final_text = item['final']
             
-            buy_match = re.search(r'(?:买点|买入).*?(\d+\.\d{2})', final_text)
-            stop_match = re.search(r'(?:止损|割肉).*?(\d+\.\d{2})', final_text)
+            # 🐛 修复了原代码的正则 Bug (d+ -> \d+)
+            buy_match = re.search(r'(?:买点|买入|竞价).*?(\d+\.\d{2})', final_text)
+            stop_match = re.search(r'(?:止损|割肉|离场).*?(\d+\.\d{2})', final_text)
             
             all_results.append({
                 "日期": safe_dates['today'],
@@ -634,7 +638,7 @@ def save_today_predictions(normal_res, demon_res, defense_res, safe_dates):
                 "T日收盘": round(row['close'], 2),
                 "AI建议买点": float(buy_match.group(1)) if buy_match else 0.0,
                 "AI建议止损": float(stop_match.group(1)) if stop_match else 0.0,
-                "AI预测理由": final_text,  # 🆕 新增：保存完整分析文本
+                "AI预测理由": final_text, 
                 "T+1日最高": None,
                 "T+1日最低": None,
                 "T+1日收盘": None,
@@ -644,11 +648,13 @@ def save_today_predictions(normal_res, demon_res, defense_res, safe_dates):
     if all_results:
         df_to_save = pd.DataFrame(all_results)
         try:
+            # 强制指定表名为 Sheet1，如果报错会直接在界面显示
             conn.update(worksheet="Sheet1", data=df_to_save, append=True)
             st.success(f"✅ 已将今日 {len(all_results)} 条 AI 策略存入云端数据库，明日自动验尸！")
         except Exception as e:
-            st.error(f"❌ 存入 Google Sheets 失败: {e}")
-
+            st.error(f"❌ 存入 Google Sheets 失败: {e}。请检查：1. 标签页名字是否为 Sheet1；2. 第一行是否有表头。")
+    else:
+        st.warning("⚠️ 今日没有生成任何有效结果，跳过保存。")
 def run_autopsy(safe_dates):
     """
     功能：每次运行程序时，自动检查云端表格里"待验尸"的记录，
