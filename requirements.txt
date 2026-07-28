@@ -8,3 +8,4 @@ openpyxl
 prettytable
 numpy
 gspread
+st-gsheets-connection
