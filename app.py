@@ -19,14 +19,34 @@ except ImportError:
 
 warnings.filterwarnings("ignore")
 
-# ================= 0. 云端数据库初始化 (Google Sheets) =================
-conn = None
+# ================= 0. 云端数据库初始化 (Google Sheets - gspread 直连版) =================
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
+
+gc = None
+SHEET_NAME = "Sheet1"
+PROMPT_HIST_SHEET = "Prompt_History"
+
 try:
-    conn = st.connection("gsheets", type="gsheets")
-    if conn is None:
-        st.error("❌ Google Sheets 连接对象为空！请检查 Streamlit Secrets 配置。")
+    # 从 Streamlit Secrets 读取凭证
+    if "gsheets" in st.secrets:
+        creds_dict = dict(st.secrets["gsheets"])
+        # 处理 private_key 中可能丢失的换行符
+        if "private_key" in creds_dict:
+            creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+            
+        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+        gc = gspread.authorize(creds)
+        logging.info("✅ Google Sheets (gspread) 连接成功！")
+    else:
+        st.warning("⚠️ 未在 Secrets 中找到 [gsheets] 配置，云端存储与验尸功能将被禁用。")
 except Exception as e:
-    st.error(f"❌ Google Sheets 连接失败: {e}。请检查 .streamlit/secrets.toml 配置。")
+    st.error(f"❌ Google Sheets 连接失败: {e}")
+    logging.error(f"gspread 初始化失败: {e}")
+
+# 全局变量：存储表格对象
+spreadsheet_url = st.secrets.get("SPREADSHEET_URL", "")
 
 # ================= 1. 全局配置 =================
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S')
@@ -78,6 +98,11 @@ if "analysis_report" not in st.session_state:
     st.session_state.analysis_report = None
 if "prompt_draft" not in st.session_state:
     st.session_state.prompt_draft = None
+# 🆕 新增：缓存 HTML 报告数据，防止 rerun 时丢失
+if "html_report_data" not in st.session_state:
+    st.session_state.html_report_data = None
+if "html_report_filename" not in st.session_state:
+    st.session_state.html_report_filename = ""
 
 # 🆕 核心修复：使用 globals().get 安全获取变量，防止因变量未定义导致 NameError 崩溃
 if "base_anti_hallucination_rules" not in st.session_state:
@@ -613,11 +638,9 @@ def export_to_html_report(normal_results, demon_results, defense_results, watchl
 # ================= 💀 核心功能：AI 策略"事后验尸"与数据记录 =================
 
 def save_today_predictions(normal_res, demon_res, defense_res, safe_dates):
-    """
-    功能：每天收盘后，把 AI 给出的买卖点存入 Google Sheets，留待明天验尸
-    """
-    if not conn:
-        st.error("❌ 无法保存：Google Sheets 未连接！请检查 Secrets 或网络。")
+    """使用 gspread 将今日预测写入 Google Sheets 的 Sheet1"""
+    if not gc or not spreadsheet_url:
+        st.warning("⚠️ 无法保存：Google Sheets 未连接或未配置 SPREADSHEET_URL。")
         return
     
     all_results = []
@@ -626,45 +649,46 @@ def save_today_predictions(normal_res, demon_res, defense_res, safe_dates):
             row = item['row']
             final_text = item['final']
             
-            # 🐛 修复了原代码的正则 Bug (d+ -> \d+)
+            # 修复后的正则表达式
             buy_match = re.search(r'(?:买点|买入|竞价).*?(\d+\.\d{2})', final_text)
             stop_match = re.search(r'(?:止损|割肉|离场).*?(\d+\.\d{2})', final_text)
             
-            all_results.append({
-                "日期": safe_dates['today'],
-                "股票名称": row['name'],
-                "代码": row['code'],
-                "轨道": track_name,
-                "T日收盘": round(row['close'], 2),
-                "AI建议买点": float(buy_match.group(1)) if buy_match else 0.0,
-                "AI建议止损": float(stop_match.group(1)) if stop_match else 0.0,
-                "AI预测理由": final_text, 
-                "T+1日最高": None,
-                "T+1日最低": None,
-                "T+1日收盘": None,
-                "验尸结果": "待验尸"
-            })
+            all_results.append([
+                safe_dates['today'],
+                row['name'],
+                row['code'],
+                track_name,
+                round(row['close'], 2),
+                float(buy_match.group(1)) if buy_match else 0.0,
+                float(stop_match.group(1)) if stop_match else 0.0,
+                final_text,
+                None, None, None,
+                "待验尸"
+            ])
             
     if all_results:
-        df_to_save = pd.DataFrame(all_results)
         try:
-            # 强制指定表名为 Sheet1，如果报错会直接在界面显示
-            conn.update(worksheet="Sheet1", data=df_to_save, append=True)
+            sh = gc.open_by_url(spreadsheet_url)
+            worksheet = sh.worksheet(SHEET_NAME)
+            worksheet.append_rows(all_results)
             st.success(f"✅ 已将今日 {len(all_results)} 条 AI 策略存入云端数据库，明日自动验尸！")
         except Exception as e:
-            st.error(f"❌ 存入 Google Sheets 失败: {e}。请检查：1. 标签页名字是否为 Sheet1；2. 第一行是否有表头。")
+            st.error(f"❌ 存入 Google Sheets 失败: {e}。请检查：1. 标签页名字是否为 Sheet1；2. Service Account 邮箱是否已加入表格编辑者。")
     else:
         st.warning("⚠️ 今日没有生成任何有效结果，跳过保存。")
 def run_autopsy(safe_dates):
-    """
-    功能：每次运行程序时，自动检查云端表格里"待验尸"的记录，
-    获取它们今天的真实走势，计算胜率并更新表格。
-    """
-    if not conn: return
+    """使用 gspread 读取历史记录并进行事后验尸"""
+    if not gc or not spreadsheet_url: return
     
     try:
-        df_history = conn.query(worksheet="Sheet1")
-        if df_history is None or df_history.empty: return
+        sh = gc.open_by_url(spreadsheet_url)
+        worksheet = sh.worksheet(SHEET_NAME)
+        df_history = pd.DataFrame(worksheet.get_all_records())
+        
+        if df_history.empty: return
+        
+        # 确保有 '验尸结果' 列
+        if '验尸结果' not in df_history.columns: return
         
         pending_rows = df_history[df_history['验尸结果'] == '待验尸'].copy()
         if pending_rows.empty: return
@@ -674,7 +698,20 @@ def run_autopsy(safe_dates):
         symbols_to_check = pending_rows['代码'].unique().tolist()
         today_real_data = get_tickflow_data_for_symbols(tf, symbols_to_check)
         
-        updated_indices = []
+        updated_rows = worksheet.get_all_values()
+        header = updated_rows[0]
+        
+        # 找到需要更新的列索引
+        try:
+            col_high = header.index('T+1日最高') + 1
+            col_low = header.index('T+1日最低') + 1
+            col_close = header.index('T+1日收盘') + 1
+            col_result = header.index('验尸结果') + 1
+        except ValueError:
+            st.warning("⚠️ 表格表头缺失，请确保第一行包含完整表头。")
+            return
+
+        update_count = 0
         for idx, row in pending_rows.iterrows():
             code = row['代码']
             real_row = today_real_data[today_real_data['code'] == code]
@@ -685,8 +722,8 @@ def run_autopsy(safe_dates):
                 t1_low = real['low']
                 t1_close = real['close']
                 
-                ai_buy = row['AI建议买点']
-                ai_stop = row['AI建议止损']
+                ai_buy = float(row.get('AI建议买点', 0))
+                ai_stop = float(row.get('AI建议止损', 0))
                 
                 result = "数据不足"
                 if ai_buy > 0 and ai_stop > 0:
@@ -699,18 +736,18 @@ def run_autopsy(safe_dates):
                     else:
                         result = f"⚠️ 阴跌套牢 (收{t1_close:.2f})"
                 
-                df_history.at[idx, 'T+1日最高'] = round(t1_high, 2)
-                df_history.at[idx, 'T+1日最低'] = round(t1_low, 2)
-                df_history.at[idx, 'T+1日收盘'] = round(t1_close, 2)
-                df_history.at[idx, '验尸结果'] = result
-                updated_indices.append(idx)
+                # gspread 行号从 1 开始，且包含表头，所以真实数据行号是 idx + 2
+                sheet_row = idx + 2 
+                worksheet.update_cell(sheet_row, col_high, round(t1_high, 2))
+                worksheet.update_cell(sheet_row, col_low, round(t1_low, 2))
+                worksheet.update_cell(sheet_row, col_close, round(t1_close, 2))
+                worksheet.update_cell(sheet_row, col_result, result)
+                update_count += 1
                 
-        if updated_indices:
-            conn.update(worksheet="Sheet1", data=df_history)
-            
+        if update_count > 0:
             completed = df_history[df_history['验尸结果'] != '待验尸']
             win_rate = len(completed[completed['验尸结果'].str.contains('大肉|浮盈', na=False)]) / max(len(completed), 1) * 100
-            st.success(f"💀 验尸完毕！AI 历史总胜率: **{win_rate:.1f}%** (共 {len(completed)} 笔)")
+            st.success(f"💀 验尸完毕！更新了 {update_count} 条记录。AI 历史总胜率: **{win_rate:.1f}%**")
             
     except Exception as e:
         st.warning(f"验尸过程出现异常 (不影响今日复盘): {e}")
@@ -820,9 +857,15 @@ if run_prompt_evolution:
     else:
         with st.spinner("正在从 Sheet1 提取错题本，导师 AI 正在批改作业..."):
             try:
-                df_history = conn.query(worksheet="Sheet1")
+                if not gc or not spreadsheet_url:
+                    st.warning("⚠️ Google Sheets 未连接，无法读取错题本。")
+                    st.stop()
+                    
+                sh = gc.open_by_url(spreadsheet_url)
+                worksheet = sh.worksheet("Sheet1")
+                df_history = pd.DataFrame(worksheet.get_all_records())
                 
-                if df_history is None or df_history.empty:
+                if df_history.empty:
                     st.warning("⚠️ 表格里还没有历史数据，请先运行几次四轨扫描。")
                 else:
                     # 筛选失败案例：包含 '爆头' 或 '套牢' 的记录
@@ -927,22 +970,24 @@ if st.session_state.analysis_report and st.session_state.prompt_draft:
                     # 更新UI显示状态
                     st.session_state.current_active_prompt = f"已进化 (补丁应用时间: {datetime.now().strftime('%m-%d %H:%M')})"
                     
-                    # 写入 Prompt_History 表
+                    # 写入 Prompt_History 表 (gspread 版)
                     try:
+                        sh = gc.open_by_url(spreadsheet_url)
                         try:
-                            hist_df = conn.query(worksheet="Prompt_History")
-                            ver_num = f"v1.{len(hist_df)}" if hist_df is not None and not hist_df.empty else "v1.0"
-                        except Exception:
+                            prompt_ws = sh.worksheet("Prompt_History")
+                            existing_rows = len(prompt_ws.get_all_values())
+                            ver_num = f"v1.{existing_rows - 1}" if existing_rows > 1 else "v1.0"
+                        except gspread.exceptions.WorksheetNotFound:
+                            prompt_ws = sh.add_worksheet(title="Prompt_History", rows=100, cols=4)
+                            prompt_ws.append_row(["Timestamp", "Version", "Prompt_Content", "Analysis_Report"])
                             ver_num = "v1.0"
                             
-                        new_row = pd.DataFrame([{
-                            "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                            "Version": ver_num,
-                            "Prompt_Content": new_patch,
-                            "Analysis_Report": st.session_state.analysis_report
-                        }])
-                        
-                        conn.update(worksheet="Prompt_History", data=new_row, append=True)
+                        prompt_ws.append_row([
+                            datetime.now().strftime("%Y-%m-%d %H:%M"),
+                            ver_num,
+                            new_patch,
+                            st.session_state.analysis_report
+                        ])
                         st.success(f"🎉 进化成功！{ver_num} 补丁已全局生效，下次扫描将使用新规则。")
                     except Exception as e:
                         st.warning(f"⚠️ 补丁已在本次会话生效，但写入云端历史表失败 (请确保建了 Prompt_History 标签页): {e}")
@@ -1059,7 +1104,10 @@ if run_market_scan or run_watchlist:
         st.divider()
         html_data = export_to_html_report(normal_results, demon_results, defense_results, [], market_context, safe_dates)
         if html_data:
-            st.download_button(label="📥 下载全市场四轨复盘 HTML 报告", data=html_data, file_name=f"四轨制复盘_{safe_dates['now_str']}.html", mime="text/html")
+            # 🆕 将数据存入 session_state，防止 rerun 时丢失
+            st.session_state.html_report_data = html_data
+            st.session_state.html_report_filename = f"四轨制复盘_{safe_dates['now_str']}.html"
+            st.info("✅ 报告已生成，请滑动到页面最底部点击下载按钮。")
 
     if run_watchlist:
         st.info("👁️ 【自选股】正在获取您的持仓数据...")
@@ -1090,6 +1138,24 @@ if run_market_scan or run_watchlist:
             st.divider()
             html_data = export_to_html_report([], [], [], watchlist_results, market_context, safe_dates)
             if html_data:
-                st.download_button(label="📥 下载自选股诊断 HTML 报告", data=html_data, file_name=f"自选股诊断_{safe_dates['now_str']}.html", mime="text/html")
+                # 🆕 将数据存入 session_state
+                st.session_state.html_report_data = html_data
+                st.session_state.html_report_filename = f"自选股诊断_{safe_dates['now_str']}.html"
+                st.info("✅ 报告已生成，请滑动到页面最底部点击下载按钮。")
         else:
             st.warning("⚠️ 未获取到有效自选股数据，请检查代码输入是否正确")
+
+# ================= 📥 全局下载按钮 (防止 rerun 导致按钮消失) =================
+st.divider()
+if st.session_state.get("html_report_data"):
+    st.subheader("📥 下载报告")
+    st.download_button(
+        label=f"💾 点击下载: {st.session_state.html_report_filename}",
+        data=st.session_state.html_report_data,
+        file_name=st.session_state.html_report_filename,
+        mime="text/html",
+        use_container_width=True,
+        type="primary"
+    )
+else:
+    st.caption("💡 提示：运行全市场扫描或自选股诊断后，这里会出现 HTML 报告下载按钮。")
