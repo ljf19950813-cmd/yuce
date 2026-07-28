@@ -8,4 +8,4 @@ openpyxl
 prettytable
 numpy
 gspread
-st-gsheets-connection
+oauth2client
