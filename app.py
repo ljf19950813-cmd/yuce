@@ -172,7 +172,12 @@ def get_data_tickflow():
         vol_arr = safe_col('volume', 0.0)
         
         # 🆕 建议一：提取流通市值 (兼容 TickFlow 财务数据可能的不同字段名)
+        # 🆕 修复：TickFlow 的流通市值字段可能是 circulating_market_cap 或 float_market_cap
         circ_mv_raw = safe_col('ext.circulating_market_cap', 0.0)
+        if np.all(circ_mv_raw == 0):
+            circ_mv_raw = safe_col('ext.float_market_cap', 0.0)
+        if np.all(circ_mv_raw == 0):
+            circ_mv_raw = safe_col('circulating_market_cap', 0.0)
         if np.mean(circ_mv_raw[circ_mv_raw > 0]) > 10000000000: 
             circ_mv = circ_mv_raw / 100000000.0
         else: 
@@ -314,8 +319,8 @@ def filter_normal_stocks(df):
     df = df[~df['name'].str.contains('ST|退', na=False)]
     df = df[df['board'].isin(['Main', 'GEM'])]
     
-    # 🆕 建议一：小资金超短黄金区间：流通市值 20亿 ~ 80亿
-    mv_mask = (df['circ_mv'] >= 20) & (df['circ_mv'] <= 80)
+    # 🆕 建议一：小资金超短黄金区间：流通市值 20亿 ~ 200亿
+    mv_mask = (df['circ_mv'] >= 20) & (df['circ_mv'] <= 200)
     
     main_mask = (df['board'] == 'Main') & (df['pct_chg'] >= 2.0) & (df['pct_chg'] <= 7.5)
     gem_mask = (df['board'] == 'GEM') & (df['pct_chg'] >= 2.0) & (df['pct_chg'] <= 15.0)
@@ -669,9 +674,13 @@ def save_today_predictions(normal_res, demon_res, defense_res, safe_dates):
         for item in res_list:
             row = item['row']
             final_text = item['final']
-            buy_match = re.search(r'(?:买点|买入|竞价|目标).*?(\d{1,3}(?:\.\d{1,2})?)', final_text)
-            stop_match = re.search(r'(?:止损|割肉|离场|跌破).*?(\d{1,3}(?:\.\d{1,2})?)', final_text)
-            rating_match = re.search(r'评级[：:\s]*([SABC])', final_text, re.IGNORECASE)
+            # 🆕 修复：精准提取。要求数字必须紧跟在关键词后，且排除“信心指数”等干扰
+            buy_match = re.search(r'(?:建议买点|买入价|竞价买点|目标买点)[：:\s]*(\d{1,3}(?:\.\d{1,2})?)', final_text)
+            stop_match = re.search(r'(?:建议止损|止损价|割肉价|离场价)[：:\s]*(\d{1,3}(?:\.\d{1,2})?)', final_text)
+            
+            # 🆕 修复：评级必须严格匹配 S/A/B/C，且后面不能紧跟数字（防止抓到信心指数）
+            rating_match = re.search(r'综合评级[：:\s]*([SABC])(?!\d)', final_text, re.IGNORECASE)
+            
             buy_price = float(buy_match.group(1)) if buy_match else 0.0
             stop_price = float(stop_match.group(1)) if stop_match else 0.0
             rating = rating_match.group(1).upper() if rating_match else "未评级"
@@ -694,50 +703,72 @@ def run_autopsy(safe_dates):
     try:
         sh = gc.open_by_url(spreadsheet_url)
         worksheet = sh.worksheet(SHEET_NAME)
-        df_history = pd.DataFrame(worksheet.get_all_records())
-        if df_history.empty or '验尸结果' not in df_history.columns: return
-        pending_rows = df_history[df_history['验尸结果'] == '待验尸'].copy()
-        if pending_rows.empty: return
-        st.info(f"🔍 检测到 {len(pending_rows)} 条历史 AI 策略，正在进行事后验尸...")
-        symbols_to_check = pending_rows['代码'].unique().tolist()
-        today_real_data = get_tickflow_data_for_symbols(tf, symbols_to_check)
-        updated_rows = worksheet.get_all_values()
-        header = updated_rows[0]
+        
+        # 🆕 修复：使用 get_all_values 获取带行号的原始数据，避免 Pandas 索引错乱
+        all_rows = worksheet.get_all_values()
+        if len(all_rows) < 2: return
+        
+        header = all_rows[0]
         try:
-            col_high = header.index('T+1日最高') + 1
-            col_low = header.index('T+1日最低') + 1
-            col_close = header.index('T+1日收盘') + 1
-            col_result = header.index('验尸结果') + 1
-        except ValueError:
-            st.warning("⚠️ 表格表头缺失，请确保第一行包含完整表头。")
+            col_result_idx = header.index('验尸结果')
+            col_code_idx = header.index('代码')
+            col_buy_idx = header.index('AI建议买点')
+            col_stop_idx = header.index('AI建议止损')
+            col_high_idx = header.index('T+1日最高')
+            col_low_idx = header.index('T+1日最低')
+            col_close_idx = header.index('T+1日收盘')
+        except ValueError as e:
+            st.warning(f"⚠️ 表格表头缺失: {e}")
             return
+
+        # 找出所有“待验尸”的真实行号 (Google Sheets 行号从 1 开始，第 1 行是表头)
+        pending_sheet_rows = []
+        symbols_to_check = []
+        for i, row in enumerate(all_rows[1:], start=2): # start=2 表示从第 2 行开始
+            if len(row) > col_result_idx and row[col_result_idx] == '待验尸':
+                pending_sheet_rows.append(i)
+                if len(row) > col_code_idx:
+                    symbols_to_check.append(row[col_code_idx])
+        
+        if not pending_sheet_rows: return
+        
+        st.info(f"🔍 检测到 {len(pending_sheet_rows)} 条历史 AI 策略，正在进行事后验尸...")
+        today_real_data = get_tickflow_data_for_symbols(tf, list(set(symbols_to_check)))
+        
         update_count = 0
-        for idx, row in pending_rows.iterrows():
-            code = row['代码']
+        for sheet_row in pending_sheet_rows:
+            row_data = all_rows[sheet_row - 1] # 获取该行数据
+            code = row_data[col_code_idx] if len(row_data) > col_code_idx else ""
+            
             real_row = today_real_data[today_real_data['code'] == code]
             if not real_row.empty:
                 real = real_row.iloc[0]
                 t1_high, t1_low, t1_close = real['high'], real['low'], real['close']
-                ai_buy = float(row.get('AI建议买点', 0))
-                ai_stop = float(row.get('AI建议止损', 0))
+                
+                # 安全读取 AI 给出的买点和止损
+                try: ai_buy = float(row_data[col_buy_idx]) if row_data[col_buy_idx] else 0.0
+                except: ai_buy = 0.0
+                try: ai_stop = float(row_data[col_stop_idx]) if row_data[col_stop_idx] else 0.0
+                except: ai_stop = 0.0
+                
                 result = "数据不足"
                 if ai_buy > 0 and ai_stop > 0:
                     if t1_low <= ai_stop: result = f"❌ 爆头止损 (最低{t1_low:.2f}破止损{ai_stop:.2f})"
                     elif t1_high >= ai_buy * 1.05: result = f"🏆 大肉止盈 (最高{t1_high:.2f})"
                     elif t1_close > ai_buy: result = f"✅ 浮盈收盘 (收{t1_close:.2f})"
                     else: result = f"⚠️ 阴跌套牢 (收{t1_close:.2f})"
-                sheet_row = idx + 2 
-                worksheet.update_cell(sheet_row, col_high, round(t1_high, 2))
-                worksheet.update_cell(sheet_row, col_low, round(t1_low, 2))
-                worksheet.update_cell(sheet_row, col_close, round(t1_close, 2))
-                worksheet.update_cell(sheet_row, col_result, result)
+                
+                # 🆕 修复：直接使用真实的 sheet_row 进行更新
+                worksheet.update_cell(sheet_row, col_high_idx + 1, round(t1_high, 2))
+                worksheet.update_cell(sheet_row, col_low_idx + 1, round(t1_low, 2))
+                worksheet.update_cell(sheet_row, col_close_idx + 1, round(t1_close, 2))
+                worksheet.update_cell(sheet_row, col_result_idx + 1, result)
                 update_count += 1
+                
         if update_count > 0:
-            completed = df_history[df_history['验尸结果'] != '待验尸']
-            win_rate = len(completed[completed['验尸结果'].str.contains('大肉|浮盈', na=False)]) / max(len(completed), 1) * 100
-            st.success(f"💀 验尸完毕！更新了 {update_count} 条记录。AI 历史总胜率: **{win_rate:.1f}%**")
+            st.success(f"💀 验尸完毕！成功更新了 {update_count} 条记录。")
     except Exception as e:
-        st.warning(f"验尸过程出现异常 (不影响今日复盘): {e}")
+        st.warning(f"验尸过程出现异常: {e}")
 
 # ================= 🆕 导师 AI 进化引擎 =================
 def generate_prompt_evolution(failed_cases_text, current_prompt_desc):
@@ -838,11 +869,28 @@ if st.session_state.analysis_report and st.session_state.prompt_draft:
             base_rules = st.session_state.base_anti_hallucination_rules
             evolved_rules = base_rules + "\n\n## 进化补丁 (来自错题分析)\n" + new_patch
             
-            # 重构 Prompt (保持最新铁律与格式)
-            st.session_state.active_prompts["normal"] = f"""你是一位在A股摸爬滚打15年的顶尖游资，精通"缩量洗盘后的反包博弈"与"反量化盘中埋伏"。\n{evolved_rules}\n\n请务必严格按照以下格式输出：\n### 1. 盘面语言解读\n### 2. 流动性与量化排雷\n### 3. 次日(T+1)竞价与买点策略\n### 4. 断臂求生止损位 (必须包含价格止损与时间止损)\n\n你必须以如下格式结束你的回答（不可省略）：\n---\n### 5. 猎手评级与仓位建议\n- **综合评级**：【S/A/B/C 中选一个】\n- **仓位建议**：【X成仓位】\n- **信心指数**：【1-10分】\n- **一句话总结**：【20字以内】\n\n⚠️ 【强制输出要求】：你的回答必须包含以上全部5个段落标题，缺少任何一段都视为不合格！"""
-            st.session_state.active_prompts["demon"] = f"""你是一位在A股摸爬滚打15年的顶尖游资，精通"龙头首阴反包"与"妖股接力情绪博弈"。\n{evolved_rules}\n\n请务必严格按照以下格式输出：\n### 1. 妖气指数与龙头信仰\n### 2. 死亡换手与流动性排雷\n### 3. 次日(T+1)竞价与买点策略\n### 4. 断臂求生止损位 (必须包含价格止损与时间止损)\n\n你必须以如下格式结束你的回答（不可省略）：\n---\n### 5. 猎手评级与仓位建议\n- **综合评级**：【S/A/B/C 中选一个】\n- **仓位建议**：【X成仓位】\n- **信心指数**：【1-10分】\n- **一句话总结**：【20字以内】\n\n⚠️ 【强制输出要求】：你的回答必须包含以上全部5个段落标题，缺少任何一段都视为不合格！"""
-            st.session_state.active_prompts["defense"] = f"""你是一位精通"弱市逆风突破"的A股实战猎手。\n{evolved_rules}\n\n请务必严格按照以下格式输出：\n### 1. 逆风强度与突破逻辑\n### 2. 筹码结构与量能健康度\n### 3. 次日(T+1)竞价与买点策略\n### 4. 断臂求生止损位 (必须包含价格止损与时间止损)\n\n你必须以如下格式结束你的回答（不可省略）：\n---\n### 5. 逆风评级与仓位建议\n- **综合评级**：【S/A/B/C 中选一个】\n- **仓位建议**：【X成仓位】\n- **信心指数**：【1-10分】\n- **一句话总结**：【20字以内】\n\n⚠️ 【强制输出要求】：你的回答必须包含以上全部5个段落标题，缺少任何一段都视为不合格！"""
-            st.session_state.active_prompts["watchlist"] = f"""你是一位冷酷且极具纪律性的"账户急救与解套操盘手"。\n{evolved_rules}\n\n请务必严格按照以下格式输出：\n### 1. 套牢病情诊断\n### 2. 盘面语言与反弹动能\n### 3. 账户急救决断\n### 4. 关键操作锚点"""
+            # 🆕 修复：确保进化后的 Prompt 依然包含完整的 5 段式结构
+            base_format = """
+请务必严格按照以下格式输出：
+### 1. 盘面语言解读 (结合【历史趋势快照】与今日量价，看透主力意图)
+### 2. 流动性与量化排雷
+### 3. 次日(T+1)竞价与买点策略 (必须分情况讨论：次日高开/平开/低开的应对买点，展示计算过程)
+### 4. 断臂求生止损位 (必须包含：1.价格止损计算过程 2.时间止损触发条件)
+
+你必须以如下格式结束你的回答（不可省略）：
+---
+### 5. 猎手评级与仓位建议
+- **综合评级**：【S/A/B/C 中选一个】
+- **仓位建议**：【X成仓位】
+- **信心指数**：【1-10分】
+- **一句话总结**：【20字以内】
+
+⚠️ 【强制输出要求】：你的回答必须包含以上全部5个段落标题（### 1. ~ ### 5.），缺少任何一段都视为不合格！尤其不能遗漏"### 5."的评级结论！"""
+
+            st.session_state.active_prompts["normal"] = f"你是一位在A股摸爬滚打15年的顶尖游资，精通'缩量洗盘后的反包博弈'与'反量化盘中埋伏'。\n{evolved_rules}\n{base_format}"
+            st.session_state.active_prompts["demon"] = f"你是一位在A股摸爬滚打15年的顶尖游资，精通'龙头首阴反包'与'妖股接力情绪博弈'。\n{evolved_rules}\n{base_format}"
+            st.session_state.active_prompts["defense"] = f"你是一位精通'弱市逆风突破'的A股实战猎手。\n{evolved_rules}\n{base_format}"
+            st.session_state.active_prompts["watchlist"] = f"你是一位冷酷且极具纪律性的'账户急救与解套操盘手'。\n{evolved_rules}\n{base_format}"
 
             st.session_state.current_active_prompt = f"已进化 (补丁应用时间: {datetime.now(tz_shanghai).strftime('%m-%d %H:%M')})"
             try:
