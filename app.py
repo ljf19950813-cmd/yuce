@@ -973,7 +973,7 @@ if run_market_scan or run_watchlist:
         try: save_today_predictions(normal_results, demon_results, defense_results, safe_dates)
         except Exception as e: st.warning(f"⚠️ 今日预测结果未能成功写入云端表格: {e}")
         
-        st.subheader("🛡️ 轨道一：缩量潜伏池 (流通市值20-80亿)")
+        st.subheader("🛡️ 轨道一：缩量潜伏池 (流通市值20-200亿)")
         if normal_results:
             for idx, item in enumerate(normal_results, 1):
                 row, reasoning, final = item['row'], item['reasoning'], item['final']
