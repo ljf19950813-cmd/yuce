@@ -209,7 +209,7 @@ def get_data_tickflow():
         df['turnover'] = turnover
         df['amount'] = amount
         df['volume'] = vol_arr
-        df['circ_mv'] = circ_mv  # 🆕 新增流通市值列
+        df['circ_mv'] = circ_mv  # 🆕 修复：补上缺失的流通市值列
         def identify_board(code):
             code = str(code)
             if code.startswith(('60', '00')): return 'Main'
@@ -318,16 +318,25 @@ def get_tickflow_data_for_symbols(tf_client, symbols_list):
 def filter_normal_stocks(df):
     df = df[~df['name'].str.contains('ST|退', na=False)]
     df = df[df['board'].isin(['Main', 'GEM'])]
-
-        # 🆕 修复：放宽流通市值上限，避免"无票可选"
-    # 逻辑：只要成交额>=1.5亿，流动性就有保障，盘子大小不是核心问题
-    # 20亿下限：过滤掉微盘股（容易退市、流动性差）
-    # 200亿上限：允许中盘股（有些妖股盘子不小但换手活跃）
-    mv_mask = (df['circ_mv'] >= 20) & (df['circ_mv'] <= 200)
     
-    main_mask = (df['board'] == 'Main') & (df['pct_chg'] >= 2.0) & (df['pct_chg'] <= 7.5)
-    gem_mask = (df['board'] == 'GEM') & (df['pct_chg'] >= 2.0) & (df['pct_chg'] <= 15.0)
-    common_mask = (df['amount'] >= 150000000) & (df['turnover'] <= 20.0)
+    # 🛡️ 风控 1：流通市值 20亿 ~ 150亿。
+    # 逻辑：20亿以下容易有退市/微盘股流动性风险；150亿以上盘子太重，超短线爆发力弱。
+    if df['circ_mv'].sum() > 0:
+        mv_mask = (df['circ_mv'] >= 20) & (df['circ_mv'] <= 150)
+    else:
+        mv_mask = pd.Series([True] * len(df)) # 容错机制：如果接口没返回市值，先放行交由后续条件过滤
+    
+    # 🛡️ 风控 2：涨幅限制 1.5% ~ 7.5% (主板) / 1.5% ~ 12.0% (创业板)
+    # 逻辑：下限 1.5% 确保票是“抗跌红盘”的，排除弱势阴跌股；
+    # 上限收紧，排除已经大幅拉升、追高风险极大的票。
+    main_mask = (df['board'] == 'Main') & (df['pct_chg'] >= 1.5) & (df['pct_chg'] <= 7.5)
+    gem_mask = (df['board'] == 'GEM') & (df['pct_chg'] >= 1.5) & (df['pct_chg'] <= 12.0)
+    
+    # 🛡️ 风控 3：成交额 >= 1.2亿，换手率 <= 12%
+    # 逻辑：1.2亿是超短线流动性及格线，防核按钮；
+    # 换手率 <= 12% 是“洗盘”的核心特征，>15% 就是高位派发/分歧了，绝对不能要。
+    common_mask = (df['amount'] >= 120000000) & (df['turnover'] <= 12.0)
+    
     return df[(main_mask | gem_mask) & common_mask & mv_mask].sort_values(by='turnover', ascending=True).head(20)
 
 def filter_demon_stocks(df):
@@ -930,7 +939,11 @@ if run_market_scan or run_watchlist:
         normal_df = filter_normal_stocks(df)
         if not normal_df.empty:
             normal_df = calculate_real_vol_ratio(normal_df)
-            normal_df = normal_df[normal_df['vol_ratio'] <= 0.9].head(CONFIG['TOP_N_NORMAL'])
+            # 🆕 修复：量比阈值放宽到 1.8，允许"缩量后首次温和放量"的票
+            # 实战逻辑：量比 0.5~0.8 = 极度缩量（主力高度控盘）
+            #          量比 0.8~1.2 = 温和缩量（散户惜售）
+            #          量比 1.2~1.8 = 首次放量（可能是启动信号）
+            normal_df = normal_df[normal_df['vol_ratio'] <= 1.3].sort_values(by='vol_ratio', ascending=True).head(CONFIG['TOP_N_NORMAL'])
         st.info("🐉 【轨道二】扫描主板妖股...")
         demon_df = filter_demon_stocks(df)
         if not demon_df.empty:
