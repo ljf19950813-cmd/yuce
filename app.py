@@ -318,8 +318,11 @@ def get_tickflow_data_for_symbols(tf_client, symbols_list):
 def filter_normal_stocks(df):
     df = df[~df['name'].str.contains('ST|退', na=False)]
     df = df[df['board'].isin(['Main', 'GEM'])]
-    
-    # 🆕 建议一：小资金超短黄金区间：流通市值 20亿 ~ 200亿
+
+        # 🆕 修复：放宽流通市值上限，避免"无票可选"
+    # 逻辑：只要成交额>=1.5亿，流动性就有保障，盘子大小不是核心问题
+    # 20亿下限：过滤掉微盘股（容易退市、流动性差）
+    # 200亿上限：允许中盘股（有些妖股盘子不小但换手活跃）
     mv_mask = (df['circ_mv'] >= 20) & (df['circ_mv'] <= 200)
     
     main_mask = (df['board'] == 'Main') & (df['pct_chg'] >= 2.0) & (df['pct_chg'] <= 7.5)
