@@ -171,17 +171,29 @@ def get_data_tickflow():
         amount_arr = safe_col('amount', 0.0)
         vol_arr = safe_col('volume', 0.0)
         
-        # 🆕 建议一：提取流通市值 (兼容 TickFlow 财务数据可能的不同字段名)
-        # 🆕 修复：TickFlow 的流通市值字段可能是 circulating_market_cap 或 float_market_cap
+        # 🆕 智能提取流通市值 (兼容 TickFlow 多种可能的字段名)
         circ_mv_raw = safe_col('ext.circulating_market_cap', 0.0)
         if np.all(circ_mv_raw == 0):
             circ_mv_raw = safe_col('ext.float_market_cap', 0.0)
         if np.all(circ_mv_raw == 0):
             circ_mv_raw = safe_col('circulating_market_cap', 0.0)
-        if np.mean(circ_mv_raw[circ_mv_raw > 0]) > 10000000000: 
-            circ_mv = circ_mv_raw / 100000000.0
-        else: 
-            circ_mv = np.where(circ_mv_raw > 1000000, circ_mv_raw / 10000.0, circ_mv_raw)
+        if np.all(circ_mv_raw == 0):
+            circ_mv_raw = safe_col('free_float_market_cap', 0.0)
+        
+        # 智能单位换算：自动识别原始数据单位（元/万元/亿元）并统一转换为"亿元"
+        positive_vals = circ_mv_raw[circ_mv_raw > 0]
+        if len(positive_vals) > 0:
+            median_val = np.median(positive_vals)
+            if median_val > 1e11:       # 原始单位是"元"
+                circ_mv = circ_mv_raw / 1e8
+            elif median_val > 1e7:      # 原始单位是"万元"
+                circ_mv = circ_mv_raw / 1e4
+            elif median_val > 1e3:      # 原始单位是"百万元"
+                circ_mv = circ_mv_raw / 1e2
+            else:                        # 已经是"亿元"
+                circ_mv = circ_mv_raw.copy()
+        else:
+            circ_mv = circ_mv_raw.copy()
 
         non_zero_pct = pct_arr[pct_arr != 0]
         if len(non_zero_pct) > 0 and np.median(np.abs(non_zero_pct)) < 0.5: pct_chg = pct_arr * 100
@@ -209,7 +221,7 @@ def get_data_tickflow():
         df['turnover'] = turnover
         df['amount'] = amount
         df['volume'] = vol_arr
-        df['circ_mv'] = circ_mv  # 🆕 修复：补上缺失的流通市值列
+        df['circ_mv'] = circ_mv
         def identify_board(code):
             code = str(code)
             if code.startswith(('60', '00')): return 'Main'
@@ -288,7 +300,7 @@ def get_tickflow_data_for_symbols(tf_client, symbols_list):
             name = tf_code.split('.')[0]
             turnover = 0.0
             amount = 0.0
-            circ_mv = 0.0 # 🆕 自选股默认流通市值为0
+            circ_mv = 0.0
             try:
                 info = tf_client.quotes.get(symbols=[tf_code], as_dataframe=True)
                 if info is not None and not info.empty:
@@ -296,9 +308,18 @@ def get_tickflow_data_for_symbols(tf_client, symbols_list):
                     if 'ext.turnover_rate' in info.columns: turnover = float(info.iloc[0].get('ext.turnover_rate', 0))
                     elif 'turnover_rate' in info.columns: turnover = float(info.iloc[0].get('turnover_rate', 0))
                     if 'amount' in info.columns: amount = float(info.iloc[0].get('amount', 0))
-                    if 'ext.circulating_market_cap' in info.columns: 
-                        raw_mv = float(info.iloc[0].get('ext.circulating_market_cap', 0))
-                        circ_mv = raw_mv / 100000000.0 if raw_mv > 10000000000 else raw_mv
+                    # 🆕 智能提取自选股流通市值
+                    for mv_col in ['ext.circulating_market_cap', 'ext.float_market_cap', 'circulating_market_cap', 'free_float_market_cap']:
+                        if mv_col in info.columns:
+                            raw_mv = float(info.iloc[0].get(mv_col, 0))
+                            if raw_mv > 0:
+                                if raw_mv > 1e11:
+                                    circ_mv = raw_mv / 1e8
+                                elif raw_mv > 1e7:
+                                    circ_mv = raw_mv / 1e4
+                                else:
+                                    circ_mv = raw_mv
+                                break
                     if 0 < turnover < 1.5: turnover *= 100
                     if 0 < amount < 100000: amount *= 10000
             except: pass
@@ -319,22 +340,17 @@ def filter_normal_stocks(df):
     df = df[~df['name'].str.contains('ST|退', na=False)]
     df = df[df['board'].isin(['Main', 'GEM'])]
     
-    # 🛡️ 风控 1：流通市值 20亿 ~ 150亿。
-    # 逻辑：20亿以下容易有退市/微盘股流动性风险；150亿以上盘子太重，超短线爆发力弱。
+    # 🛡️ 风控 1：流通市值 20亿 ~ 150亿
     if df['circ_mv'].sum() > 0:
         mv_mask = (df['circ_mv'] >= 20) & (df['circ_mv'] <= 150)
     else:
-        mv_mask = pd.Series([True] * len(df)) # 容错机制：如果接口没返回市值，先放行交由后续条件过滤
+        mv_mask = pd.Series([True] * len(df))
     
-    # 🛡️ 风控 2：涨幅限制 1.5% ~ 7.5% (主板) / 1.5% ~ 12.0% (创业板)
-    # 逻辑：下限 1.5% 确保票是“抗跌红盘”的，排除弱势阴跌股；
-    # 上限收紧，排除已经大幅拉升、追高风险极大的票。
+    # 🛡️ 风控 2：涨幅限制
     main_mask = (df['board'] == 'Main') & (df['pct_chg'] >= 1.5) & (df['pct_chg'] <= 7.5)
     gem_mask = (df['board'] == 'GEM') & (df['pct_chg'] >= 1.5) & (df['pct_chg'] <= 12.0)
     
     # 🛡️ 风控 3：成交额 >= 1.2亿，换手率 <= 12%
-    # 逻辑：1.2亿是超短线流动性及格线，防核按钮；
-    # 换手率 <= 12% 是“洗盘”的核心特征，>15% 就是高位派发/分歧了，绝对不能要。
     common_mask = (df['amount'] >= 120000000) & (df['turnover'] <= 12.0)
     
     return df[(main_mask | gem_mask) & common_mask & mv_mask].sort_values(by='turnover', ascending=True).head(20)
@@ -430,19 +446,25 @@ def get_history_context(tf_client, tf_code):
 
 # ================= 6. 终极超短线 Prompt 体系 =================
 ANTI_HALLUCINATION_RULES = """
-⚠️ 游资实战铁律（超短线猎手最高纪律，违反将导致严重亏损）：
-1. 【严禁编造价格】：所有止损、目标、买点，**必须**基于我提供的【当前真实价格】、【今日最高/低】和【昨收】进行精确数学计算（精确到分）。
-2. 【强制数学公式】：输出价格时，必须展示计算过程！严禁凭空捏造！
-3. 【严禁脑补历史】：绝对不要使用你训练数据中的历史走势！你的趋势判断**必须且只能**基于我提供的【历史趋势快照】与【今日盘面数据】。
-4. 【散户视角】：我是资金量不足50万的散户。我要"一击必杀"的确定性和"断臂求生"的致命止损。
-5. 【拒绝端水】：直接告诉我买还是不买？什么价格买？什么价格割肉？
-6. 【数据缺失处理】：如果【今日最高/低】与【当前价】相同，说明数据缺失！**严禁**得出"价格没变过"的结论！必须基于【昨收】和【涨幅】反推波动区间！
-7. 【纯粹量价推演】：严禁提及、猜测或编造该股票的行业、题材、概念！所有分析必须纯粹基于量价结构、筹码博弈、历史趋势与市场情绪。
-8. 【次日买入视角】：明确告知用户当前是基于【T日收盘】复盘，准备在【T+1日（次日）】买入。你的买点、止损点必须考虑次日集合竞价和早盘情绪。
-9. 【条件触发机制】：严禁只给一个固定死价格！必须给出"如果次日高开>2%怎么做"、"如果次日低开或平开怎么做"的条件分支策略。
-10. 🩸【筹码断层与压力位排雷】：结合【历史趋势快照】中的"60日最高价"，如果当前价格距离60日最高价**不足 3%**，说明上方存在极其沉重的套牢盘解套抛压！**必须直接给出 C级（放弃）评级**，小资金绝不给主力抬轿子！
-11. 🔥【尾盘异动权重加成】：高度重视我提供的【分时数据】中的"尾盘30分量占比"。如果尾盘量占比 **> 20%**，说明有主力资金拿先手抢筹，次日溢价极高，**评级必须上调一档（如 B 升 A）**！反之若尾盘无量，则降级。
-12. ⏱️【时间止损铁律】：小资金做超短潜伏，最大的成本是时间！除了给出价格止损，你**必须**给出【时间止损点】（例如：次日早盘 10:30 前若不能放量突破 XX 元，说明主力放弃做多，必须无条件市价清仓，绝不把超短做成中线！）。
+【游资实战铁律 - 精简版】
+1. 严禁追高：买点必须在分时均线附近或下方，急拉5%以上不追。
+2. 量化排雷：尾盘量占比>20%且接近60日高点时，视为诱多，降级为C。
+3. 时间止损：买入后3个交易日内未创出新高，无条件清仓。
+4. 仓位纪律：单票仓位不超过3成，S级除外。
+5. 市场环境：大盘情绪为"冰点"或"退潮"时，最高评级只能是B。
+
+⚠️ 【强制输出格式 - 违反即视为不合格】：
+你必须严格按照以下5个Markdown三级标题输出，缺少任何一段都视为不合格：
+
+### 1. 盘面语言解读
+### 2. 流动性与量化排雷
+### 3. 次日(T+1)竞价与买点策略
+### 4. 断臂求生止损位
+### 5. 猎手评级与仓位建议
+- **综合评级**：【S/A/B/C 选一】
+- **仓位建议**：【X成仓位】
+- **信心指数**：【1-10分】
+- **一句话总结**：【20字以内】
 """
 
 PROMPT_NORMAL = f"""你是一位在A股摸爬滚打15年的顶尖游资，精通"缩量洗盘后的反包博弈"与"反量化盘中埋伏"。
@@ -464,7 +486,10 @@ PROMPT_NORMAL = f"""你是一位在A股摸爬滚打15年的顶尖游资，精通
 - **信心指数**：【1-10分】
 - **一句话总结**：【20字以内】
 
-⚠️ 【强制输出要求】：你的回答必须包含以上全部5个段落标题（### 1. ~ ### 5.），缺少任何一段都视为不合格！尤其不能遗漏"### 5."的评级结论！"""
+⚠️⚠️⚠️ 【终极强制输出要求 - 三重警告】：
+1. 你的回答必须包含以上全部5个段落标题（### 1. ~ ### 5.），缺少任何一段都视为严重不合格！
+2. 尤其不能遗漏"### 5."的评级结论！这是最重要的输出！
+3. 如果你的回答在"### 5."之前就被截断，说明你的输出太长了，请精简前4段内容，确保"### 5."一定出现！"""
 
 PROMPT_DEMON = f"""你是一位在A股摸爬滚打15年的顶尖游资，精通"龙头首阴反包"与"妖股接力情绪博弈"。
 {ANTI_HALLUCINATION_RULES}
@@ -485,7 +510,10 @@ PROMPT_DEMON = f"""你是一位在A股摸爬滚打15年的顶尖游资，精通"
 - **信心指数**：【1-10分】
 - **一句话总结**：【20字以内】
 
-⚠️ 【强制输出要求】：你的回答必须包含以上全部5个段落标题（### 1. ~ ### 5.），缺少任何一段都视为不合格！尤其不能遗漏"### 5."的评级结论！"""
+⚠️⚠️⚠️ 【终极强制输出要求 - 三重警告】：
+1. 你的回答必须包含以上全部5个段落标题（### 1. ~ ### 5.），缺少任何一段都视为严重不合格！
+2. 尤其不能遗漏"### 5."的评级结论！这是最重要的输出！
+3. 如果你的回答在"### 5."之前就被截断，说明你的输出太长了，请精简前4段内容，确保"### 5."一定出现！"""
 
 PROMPT_DEFENSE = f"""你是一位精通"弱市逆风突破"的A股实战猎手。当前大盘萎靡/冰点，你的任务是在泥沙俱下中寻找"逆市上涨、筹码稳健、即将突破"的真金标的。
 {ANTI_HALLUCINATION_RULES}
@@ -506,7 +534,10 @@ PROMPT_DEFENSE = f"""你是一位精通"弱市逆风突破"的A股实战猎手�
 - **信心指数**：【1-10分】
 - **一句话总结**：【20字以内】
 
-⚠️ 【强制输出要求】：你的回答必须包含以上全部5个段落标题（### 1. ~ ### 5.），缺少任何一段都视为不合格！尤其不能遗漏"### 5."的评级结论！"""
+⚠️⚠️⚠️ 【终极强制输出要求 - 三重警告】：
+1. 你的回答必须包含以上全部5个段落标题（### 1. ~ ### 5.），缺少任何一段都视为严重不合格！
+2. 尤其不能遗漏"### 5."的评级结论！这是最重要的输出！
+3. 如果你的回答在"### 5."之前就被截断，说明你的输出太长了，请精简前4段内容，确保"### 5."一定出现！"""
 
 PROMPT_WATCHLIST = f"""你是一位冷酷且极具纪律性的"账户急救与解套操盘手"。你的客户（我）目前持有的自选股全部处于【套牢状态】。
 你的任务不是寻找买点，而是基于当前的量价结构、趋势和筹码分布，给出最理性的"断臂求生"或"降本解套"方案。拒绝任何情感安慰，只讲残酷真相和操作纪律。
@@ -548,10 +579,15 @@ def analyze_with_llm(stock_dict, minute_feature_text, market_context, history_co
         response = llm_client.chat.completions.create(
             model=CONFIG["LLM_MODEL"],
             messages=[{"role": "system", "content": system_p}, {"role": "user", "content": user_prompt}],
-            max_tokens=4096
+            max_tokens=8192
         )
         reasoning = getattr(response.choices[0].message, 'reasoning_content', '')
         final = response.choices[0].message.content
+        
+        # 🆕 双重警告：检测输出是否缺少第5段，如果缺少则自动追加警告
+        if "### 5." not in final:
+            final += "\n\n⚠️⚠️⚠️ 【系统检测警告】：AI 输出被截断，缺少第5段评级结论！本次分析结果不可信，请重新运行或手动评估。"
+        
         return reasoning, final
     except Exception as e:
         return str(e), f"❌ AI 调用失败: {e}"
@@ -686,12 +722,9 @@ def save_today_predictions(normal_res, demon_res, defense_res, safe_dates):
         for item in res_list:
             row = item['row']
             final_text = item['final']
-            # 🆕 修复：精准提取。要求数字必须紧跟在关键词后，且排除“信心指数”等干扰
             buy_match = re.search(r'(?:建议买点|买入价|竞价买点|目标买点)[：:\s]*(\d{1,3}(?:\.\d{1,2})?)', final_text)
             stop_match = re.search(r'(?:建议止损|止损价|割肉价|离场价)[：:\s]*(\d{1,3}(?:\.\d{1,2})?)', final_text)
-            
-            # 🆕 修复：评级必须严格匹配 S/A/B/C，且后面不能紧跟数字（防止抓到信心指数）
-            rating_match = re.search(r'综合评级[：:\s]*([SABC])(?!\d)', final_text, re.IGNORECASE)
+            rating_match = re.search(r'综合评级[：:\s]*【?([SABC])】?(?!\d)', final_text, re.IGNORECASE)
             
             buy_price = float(buy_match.group(1)) if buy_match else 0.0
             stop_price = float(stop_match.group(1)) if stop_match else 0.0
@@ -716,7 +749,6 @@ def run_autopsy(safe_dates):
         sh = gc.open_by_url(spreadsheet_url)
         worksheet = sh.worksheet(SHEET_NAME)
         
-        # 🆕 修复：使用 get_all_values 获取带行号的原始数据，避免 Pandas 索引错乱
         all_rows = worksheet.get_all_values()
         if len(all_rows) < 2: return
         
@@ -733,10 +765,9 @@ def run_autopsy(safe_dates):
             st.warning(f"⚠️ 表格表头缺失: {e}")
             return
 
-        # 找出所有“待验尸”的真实行号 (Google Sheets 行号从 1 开始，第 1 行是表头)
         pending_sheet_rows = []
         symbols_to_check = []
-        for i, row in enumerate(all_rows[1:], start=2): # start=2 表示从第 2 行开始
+        for i, row in enumerate(all_rows[1:], start=2):
             if len(row) > col_result_idx and row[col_result_idx] == '待验尸':
                 pending_sheet_rows.append(i)
                 if len(row) > col_code_idx:
@@ -749,7 +780,7 @@ def run_autopsy(safe_dates):
         
         update_count = 0
         for sheet_row in pending_sheet_rows:
-            row_data = all_rows[sheet_row - 1] # 获取该行数据
+            row_data = all_rows[sheet_row - 1]
             code = row_data[col_code_idx] if len(row_data) > col_code_idx else ""
             
             real_row = today_real_data[today_real_data['code'] == code]
@@ -757,7 +788,6 @@ def run_autopsy(safe_dates):
                 real = real_row.iloc[0]
                 t1_high, t1_low, t1_close = real['high'], real['low'], real['close']
                 
-                # 安全读取 AI 给出的买点和止损
                 try: ai_buy = float(row_data[col_buy_idx]) if row_data[col_buy_idx] else 0.0
                 except: ai_buy = 0.0
                 try: ai_stop = float(row_data[col_stop_idx]) if row_data[col_stop_idx] else 0.0
@@ -770,7 +800,6 @@ def run_autopsy(safe_dates):
                     elif t1_close > ai_buy: result = f"✅ 浮盈收盘 (收{t1_close:.2f})"
                     else: result = f"⚠️ 阴跌套牢 (收{t1_close:.2f})"
                 
-                # 🆕 修复：直接使用真实的 sheet_row 进行更新
                 worksheet.update_cell(sheet_row, col_high_idx + 1, round(t1_high, 2))
                 worksheet.update_cell(sheet_row, col_low_idx + 1, round(t1_low, 2))
                 worksheet.update_cell(sheet_row, col_close_idx + 1, round(t1_close, 2))
@@ -881,7 +910,6 @@ if st.session_state.analysis_report and st.session_state.prompt_draft:
             base_rules = st.session_state.base_anti_hallucination_rules
             evolved_rules = base_rules + "\n\n## 进化补丁 (来自错题分析)\n" + new_patch
             
-            # 🆕 修复：确保进化后的 Prompt 依然包含完整的 5 段式结构
             base_format = """
 请务必严格按照以下格式输出：
 ### 1. 盘面语言解读 (结合【历史趋势快照】与今日量价，看透主力意图)
@@ -897,7 +925,10 @@ if st.session_state.analysis_report and st.session_state.prompt_draft:
 - **信心指数**：【1-10分】
 - **一句话总结**：【20字以内】
 
-⚠️ 【强制输出要求】：你的回答必须包含以上全部5个段落标题（### 1. ~ ### 5.），缺少任何一段都视为不合格！尤其不能遗漏"### 5."的评级结论！"""
+⚠️⚠️⚠️ 【终极强制输出要求 - 三重警告】：
+1. 你的回答必须包含以上全部5个段落标题（### 1. ~ ### 5.），缺少任何一段都视为严重不合格！
+2. 尤其不能遗漏"### 5."的评级结论！这是最重要的输出！
+3. 如果你的回答在"### 5."之前就被截断，说明你的输出太长了，请精简前4段内容，确保"### 5."一定出现！"""
 
             st.session_state.active_prompts["normal"] = f"你是一位在A股摸爬滚打15年的顶尖游资，精通'缩量洗盘后的反包博弈'与'反量化盘中埋伏'。\n{evolved_rules}\n{base_format}"
             st.session_state.active_prompts["demon"] = f"你是一位在A股摸爬滚打15年的顶尖游资，精通'龙头首阴反包'与'妖股接力情绪博弈'。\n{evolved_rules}\n{base_format}"
@@ -939,10 +970,10 @@ if run_market_scan or run_watchlist:
         normal_df = filter_normal_stocks(df)
         if not normal_df.empty:
             normal_df = calculate_real_vol_ratio(normal_df)
-            # 🆕 修复：量比阈值放宽到 1.8，允许"缩量后首次温和放量"的票
+            # 🆕 优化：量比阈值 1.3，允许"缩量后首次温和放量"的票进入
             # 实战逻辑：量比 0.5~0.8 = 极度缩量（主力高度控盘）
             #          量比 0.8~1.2 = 温和缩量（散户惜售）
-            #          量比 1.2~1.8 = 首次放量（可能是启动信号）
+            #          量比 1.2~1.8 = 首次放量（可能是启动信号，但超过1.8视为异常放量）
             normal_df = normal_df[normal_df['vol_ratio'] <= 1.3].sort_values(by='vol_ratio', ascending=True).head(CONFIG['TOP_N_NORMAL'])
         st.info("🐉 【轨道二】扫描主板妖股...")
         demon_df = filter_demon_stocks(df)
@@ -989,7 +1020,7 @@ if run_market_scan or run_watchlist:
         try: save_today_predictions(normal_results, demon_results, defense_results, safe_dates)
         except Exception as e: st.warning(f"⚠️ 今日预测结果未能成功写入云端表格: {e}")
         
-        st.subheader("🛡️ 轨道一：缩量潜伏池 (流通市值20-200亿)")
+        st.subheader("🛡️ 轨道一：缩量潜伏池 (流通市值20-150亿)")
         if normal_results:
             for idx, item in enumerate(normal_results, 1):
                 row, reasoning, final = item['row'], item['reasoning'], item['final']
