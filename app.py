@@ -35,10 +35,8 @@ SHEET_NAME = "Sheet1"
 PROMPT_HIST_SHEET = "Prompt_History"
 
 try:
-    # 从 Streamlit Secrets 读取凭证
     if "gsheets" in st.secrets:
         creds_dict = dict(st.secrets["gsheets"])
-        # 处理 private_key 中可能丢失的换行符
         if "private_key" in creds_dict:
             creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
             
@@ -52,7 +50,6 @@ except Exception as e:
     st.error(f"❌ Google Sheets 连接失败: {e}")
     logging.error(f"gspread 初始化失败: {e}")
 
-# 全局变量：存储表格对象
 spreadsheet_url = st.secrets.get("SPREADSHEET_URL", "")
 
 # ================= 1. 全局配置 =================
@@ -105,19 +102,13 @@ if "analysis_report" not in st.session_state:
     st.session_state.analysis_report = None
 if "prompt_draft" not in st.session_state:
     st.session_state.prompt_draft = None
-
-# 🆕 新增：缓存 HTML 报告数据，防止 rerun 时丢失
 if "html_report_data" not in st.session_state:
     st.session_state.html_report_data = None
 if "html_report_filename" not in st.session_state:
     st.session_state.html_report_filename = ""
-
-# 🆕 核心修复：使用 globals().get 安全获取变量，防止因变量未定义导致 NameError 崩溃
 if "base_anti_hallucination_rules" not in st.session_state:
     default_rules = globals().get("ANTI_HALLUCINATION_RULES", "【核心纪律】\n1. 严禁编造任何财务数据、价格或涨跌幅。\n2. 所有计算必须展示过程，精确到小数点后两位。\n3. 必须结合提供的【历史趋势快照】进行分析，严禁脱离数据空谈。")
     st.session_state.base_anti_hallucination_rules = default_rules
-
-# 🆕 核心修复：用 session_state 存储当前生效的动态 Prompt，避免使用 global
 if "active_prompts" not in st.session_state:
     p_normal = globals().get("PROMPT_NORMAL", "默认普通模式 Prompt")
     p_demon = globals().get("PROMPT_DEMON", "默认妖股模式 Prompt")
@@ -133,9 +124,6 @@ if "active_prompts" not in st.session_state:
 
 # ================= 🛡️ 安全日期生成器 (时区修复版) =================
 def get_safe_trade_dates():
-    """
-    【时区修复版】强制使用北京时间 (Asia/Shanghai)，防止云端 UTC 时区导致的时间错乱。
-    """
     holidays_2026 = {
         '20260101', '20260102', '20260103', '20260104', 
         '20260214', '20260215', '20260216', '20260217', '20260218', '20260219', '20260220', '20260221', '20260222', '20260223', '20260228',
@@ -146,9 +134,7 @@ def get_safe_trade_dates():
         '20261001', '20261002', '20261003', '20261004', '20261005', '20261006', '20261007', '20261010'
     }
     
-    # 🆕 核心修复：使用北京时间
     now = datetime.now(tz_shanghai)
-    
     current_str = now.strftime('%Y%m%d')
     current_time_int = int(now.strftime('%H%M'))
     safe_time_threshold = 1530
@@ -349,16 +335,25 @@ def get_tickflow_data_for_symbols(tf_client, symbols_list):
             logging.error(f"获取 {tf_code} 失败: {e}")
     return pd.DataFrame(valid_rows)
 
-# ================= 4. 四轨制筛选器 =================
+# ================= 4. 四轨制筛选器 (V26.0 强化版) =================
 def filter_normal_stocks(df):
+    """轨道一：缩量潜伏池 —— 增加黄金成交额区间 + 剔除低价股"""
     df = df[~df['name'].str.contains('ST|退', na=False)]
     df = df[df['board'].isin(['Main', 'GEM'])]
+    
+    # 🆕 V26.0 强化：成交额"黄金区间" (2亿 ~ 15亿)
+    # 小于2亿是僵尸股主力拉不动；大于15亿是明牌大票散户接力易接飞刀
     main_mask = (df['board'] == 'Main') & (df['pct_chg'] >= 2.0) & (df['pct_chg'] <= 7.5)
     gem_mask = (df['board'] == 'GEM') & (df['pct_chg'] >= 2.0) & (df['pct_chg'] <= 15.0)
-    common_mask = (df['amount'] >= 150000000) & (df['turnover'] <= 20.0)
-    return df[(main_mask | gem_mask) & common_mask].sort_values(by='turnover', ascending=True).head(20)
+    common_mask = (df['amount'] >= 200000000) & (df['amount'] <= 1500000000) & (df['turnover'] <= 20.0)
+    
+    # 🆕 V26.0 强化：剔除超低价股 (<3元)，低价股往往是基本面有问题的垃圾股
+    price_mask = df['close'] >= 3.0
+    
+    return df[(main_mask | gem_mask) & common_mask & price_mask].sort_values(by='turnover', ascending=True).head(30)
 
 def filter_demon_stocks(df):
+    """轨道二：主板妖股池"""
     df = df[~df['name'].str.contains('ST|退', na=False)]
     df = df[df['board'] == 'Main'] 
     price_mask = df['close'] <= 30.0
@@ -368,6 +363,7 @@ def filter_demon_stocks(df):
     return df[price_mask & turnover_mask & amount_mask & pct_mask].sort_values(by='pct_chg', ascending=False).head(10)
 
 def filter_defense_stocks(df, tf_client, market_avg_pct=0.0):
+    """轨道三：逆风突破池"""
     df = df[~df['name'].str.contains('ST|退', na=False)]
     df = df[df['board'] == 'Main']
     lower_pct = max(0.5, market_avg_pct + 1.0)
@@ -393,19 +389,82 @@ def filter_defense_stocks(df, tf_client, market_avg_pct=0.0):
     return candidates[candidates['tf_code'].isin(verified_codes)].head(CONFIG['TOP_N_DEFENSE'])
 
 def calculate_real_vol_ratio(candidate_df):
+    """V26.0 强化版：量比计算 + MA20趋势过滤 + 筹码断层检测"""
     real_vol_ratios = []
+    chip_gap_warnings = []  # 🆕 存储筹码断层警告信息
+    
     for _, row in candidate_df.iterrows():
         try:
-            df_k = tf.klines.get(row['tf_code'], period="1d", count=6, as_dataframe=True)
-            if df_k is not None and len(df_k) >= 2:
+            df_k = tf.klines.get(row['tf_code'], period="1d", count=25, as_dataframe=True)
+            if df_k is not None and len(df_k) >= 20:
                 today_vol = pd.to_numeric(df_k.iloc[-1]['volume'], errors='coerce')
-                past_5d_avg_vol = pd.to_numeric(df_k.iloc[:-1]['volume'], errors='coerce').mean()
+                today_close = pd.to_numeric(df_k.iloc[-1].get('close', df_k.iloc[-1].get('last_price')), errors='coerce')
+                today_high = pd.to_numeric(df_k.iloc[-1].get('high', df_k.iloc[-1].get('high_price')), errors='coerce')
+                
+                # 计算过去5天平均成交量
+                past_5d_avg_vol = pd.to_numeric(df_k.iloc[-6:-1]['volume'], errors='coerce').mean()
                 vol_ratio = today_vol / past_5d_avg_vol if past_5d_avg_vol > 0 else 99.0
-            else: vol_ratio = 99.0
-        except: vol_ratio = 99.0
+                
+                # 计算 20日均线 (MA20)
+                ma20 = pd.to_numeric(df_k['close'].tail(20), errors='coerce').mean()
+                
+                # 🛡️ 防假缩量核心逻辑 —— 跌破 MA20 直接淘汰
+                if today_close < ma20:
+                    vol_ratio = 99.0
+                    chip_gap_warnings.append(f"⚠️ {row['name']} 跌破MA20({ma20:.2f})，空头趋势已强制过滤。")
+                    real_vol_ratios.append(vol_ratio)
+                    time.sleep(0.05)
+                    continue
+                
+                # 🆕 V26.0 核心优化：筹码断层检测 (Chip Gap Detection)
+                # 逻辑：扫描过去10天内，是否存在"放量大阴线" (跌幅>5% 且 成交量>5日均量1.5倍)
+                chip_gap_found = False
+                chip_gap_price = 0.0
+                chip_gap_date = ""
+                for i in range(-10, -1):  # 扫描倒数第10天到倒数第2天 (不包含今天)
+                    try:
+                        d_close = pd.to_numeric(df_k.iloc[i].get('close', df_k.iloc[i].get('last_price')), errors='coerce')
+                        d_pre_close = pd.to_numeric(df_k.iloc[i-1].get('close', df_k.iloc[i-1].get('last_price')), errors='coerce')
+                        d_high = pd.to_numeric(df_k.iloc[i].get('high', df_k.iloc[i].get('high_price')), errors='coerce')
+                        d_vol = pd.to_numeric(df_k.iloc[i]['volume'], errors='coerce')
+                        
+                        if d_pre_close > 0:
+                            d_pct = (d_close - d_pre_close) / d_pre_close * 100
+                            # 如果是大阴线 (跌幅>5%) 且 放量 (成交量 > 5日均量的1.5倍)
+                            if d_pct <= -5.0 and d_vol > past_5d_avg_vol * 1.5:
+                                # 如果今天的最高价还没突破那根大阴线的最高价，说明套牢盘还在头顶
+                                if today_high < d_high * 0.98:
+                                    chip_gap_found = True
+                                    chip_gap_price = d_high
+                                    break
+                    except:
+                        continue
+                
+                if chip_gap_found:
+                    vol_ratio = 99.0  # 发现筹码断层，直接淘汰！
+                    chip_gap_warnings.append(f"⚠️ {row['name']} 上方存在筹码断层 (大阴线高点 {chip_gap_price:.2f})，已强制过滤。")
+                else:
+                    chip_gap_warnings.append(f"✅ {row['name']} 上方筹码干净，无套牢盘压力。 (量比:{vol_ratio:.2f})")
+                    
+            else: 
+                vol_ratio = 99.0
+                chip_gap_warnings.append(f"⚠️ {row['name']} 历史数据不足，无法检测筹码断层。")
+        except: 
+            vol_ratio = 99.0
+            chip_gap_warnings.append(f"⚠️ {row['name']} 数据获取异常。")
+            
         real_vol_ratios.append(vol_ratio)
         time.sleep(0.05)
+        
     candidate_df['vol_ratio'] = real_vol_ratios
+    
+    # 🆕 将筹码断层的检测结果打印到 Streamlit 界面
+    for warning in chip_gap_warnings:
+        if warning.startswith("⚠️"):
+            st.caption(warning)
+        else:
+            st.caption(f"🟢 {warning}")
+            
     return candidate_df
 
 # ================= 🚀 5. 历史趋势快照 =================
@@ -447,7 +506,7 @@ def get_history_context(tf_client, tf_code):
     except Exception as e:
         return f"【历史数据获取异常: {e}】"
 
-# ================= 6. 纯净版 Prompt (增加强制输出模板) =================
+# ================= 6. 纯净版 Prompt (V26.0 小资金快进快出铁律) =================
 ANTI_HALLUCINATION_RULES = """
 ⚠️ 游资实战铁律（违反将导致严重亏损）：
 1. 【严禁编造价格】：所有止损、目标、买点，**必须**基于我提供的【当前真实价格】、【今日最高/低】和【昨收】进行精确数学计算（精确到分）。
@@ -459,6 +518,12 @@ ANTI_HALLUCINATION_RULES = """
 7. 【纯粹量价推演】：严禁提及、猜测或编造该股票的行业、题材、概念！所有分析必须纯粹基于量价结构、筹码博弈、历史趋势与市场情绪。
 8. 【次日买入视角】：明确告知用户当前是基于【T日收盘】复盘，准备在【T+1日（次日）】买入。你的买点、止损点必须考虑次日集合竞价和早盘情绪。
 9. 【条件触发机制】：严禁只给一个固定死价格！必须给出"如果次日高开>2%怎么做"、"如果次日低开或平开怎么做"的条件分支策略。
+10. 【板块共振排雷铁律】：你必须审视该标的所属的概念/行业板块今日的整体表现。如果该标的属于今日"领跌板块"或"毫无资金问津的冷门板块"，即便其量价结构（缩量上涨）再完美，也必须强制降级为 C 级（放弃），并在风险提示中写明"缺乏板块效应，孤木难支"。超短线只做有板块资金回流、或属于当前市场主线/支线发酵期的标的。
+11. 【小资金时间止损铁律】：小资金（<50万）的核心优势是"船小好掉头"。你必须在策略中加入"时间止损"概念：
+    - 如果次日买入后 30 分钟内股价未能拉升突破买入价 2%，必须立刻市价平仓，严禁死扛！
+    - 如果次日全天股价在买入价上下 1% 以内窄幅震荡（织布机走势），说明主力无意拉升，必须在收盘前 14:45 前无条件清仓。
+    - 严禁出现"再看看"、"等反弹"等模糊词汇。小资金的时间成本就是生命！
+12. 【T+1 冲高回落防御机制】：如果次日早盘 9:30-10:00 之间出现快速冲高（涨幅>4%），但随后 15 分钟内回落超过 2%，必须立刻市价止盈一半仓位，锁定利润。剩余仓位设置"保本止损"（即止损价上移至买入价），让利润奔跑，绝不让盈利单变成亏损单！
 """
 
 PROMPT_NORMAL = f"""你是一位在A股摸爬滚打15年的顶尖游资，精通"缩量洗盘后的反包博弈"与"反量化盘中埋伏"。
@@ -468,7 +533,7 @@ PROMPT_NORMAL = f"""你是一位在A股摸爬滚打15年的顶尖游资，精通
 ### 1. 盘面语言解读 (结合【历史趋势快照】与今日量价，看透主力意图)
 ### 2. 流动性与量化排雷
 ### 3. 次日(T+1)竞价与买点策略 (必须分情况讨论：次日高开/平开/低开的应对买点，展示基于今日收盘价和昨收价的计算过程，精确到分)
-### 4. 断臂求生止损位 (基于次日买入后的持仓成本，给出动态止损价计算过程)
+### 4. 断臂求生止损位 (基于次日买入后的持仓成本，给出动态止损价计算过程，包含时间止损规则)
 
 你必须以如下格式结束你的回答（不可省略）：
 ---
@@ -476,6 +541,7 @@ PROMPT_NORMAL = f"""你是一位在A股摸爬滚打15年的顶尖游资，精通
 - **综合评级**：【S/A/B/C 中选一个】
 - **仓位建议**：【X成仓位】
 - **信心指数**：【1-10分】
+- **时间止损**：【买入后X分钟不突破则离场】
 - **一句话总结**：【20字以内】
 
 ⚠️ 【强制输出要求】：你的回答必须包含以上全部5个段落标题（### 1. ~ ### 5.），缺少任何一段都视为不合格！尤其不能遗漏"### 5."的评级结论！"""
@@ -487,7 +553,7 @@ PROMPT_DEMON = f"""你是一位在A股摸爬滚打15年的顶尖游资，精通"
 ### 1. 妖气指数与龙头信仰 (结合【历史趋势快照】分析连板高度、市场身位及今日盘口语言)
 ### 2. 死亡换手与流动性排雷 (结合成交额、换手率分析当前筹码断层风险)
 ### 3. 次日(T+1)竞价与买点策略 (必须分情况讨论：次日高开>3%如何抢筹/平开如何半路/低开如何放弃，展示基于今日收盘价和昨收价的计算过程，精确到分)
-### 4. 断臂求生止损位 (基于次日买入后的预估持仓成本，给出动态止损价计算过程)
+### 4. 断臂求生止损位 (基于次日买入后的预估持仓成本，给出动态止损价计算过程，包含时间止损规则)
 
 你必须以如下格式结束你的回答（不可省略）：
 ---
@@ -495,6 +561,7 @@ PROMPT_DEMON = f"""你是一位在A股摸爬滚打15年的顶尖游资，精通"
 - **综合评级**：【S/A/B/C 中选一个】
 - **仓位建议**：【X成仓位】
 - **信心指数**：【1-10分】
+- **时间止损**：【买入后X分钟不突破则离场】
 - **一句话总结**：【20字以内】
 
 ⚠️ 【强制输出要求】：你的回答必须包含以上全部5个段落标题（### 1. ~ ### 5.），缺少任何一段都视为不合格！尤其不能遗漏"### 5."的评级结论！"""
@@ -506,7 +573,7 @@ PROMPT_DEFENSE = f"""你是一位精通"弱市逆风突破"的A股实战猎手�
 ### 1. 逆风强度与突破逻辑 (结合【历史趋势快照】与今日量价背离，分析突破有效性)
 ### 2. 筹码结构与量能健康度
 ### 3. 次日(T+1)竞价与买点策略 (必须分情况讨论：次日高开如何追/平开如何伏击/低开或急跌如何低吸，展示基于今日收盘价和昨收价的计算过程，精确到分)
-### 4. 断臂求生止损位 (基于次日买入后的预估持仓成本，给出动态止损价计算过程，跌破某关键位必须无条件离场)
+### 4. 断臂求生止损位 (基于次日买入后的预估持仓成本，给出动态止损价计算过程，包含时间止损规则，跌破某关键位必须无条件离场)
 
 你必须以如下格式结束你的回答（不可省略）：
 ---
@@ -514,6 +581,7 @@ PROMPT_DEFENSE = f"""你是一位精通"弱市逆风突破"的A股实战猎手�
 - **综合评级**：【S/A/B/C 中选一个】
 - **仓位建议**：【X成仓位】
 - **信心指数**：【1-10分】
+- **时间止损**：【买入后X分钟不突破则离场】
 - **一句话总结**：【20字以内】
 
 ⚠️ 【强制输出要求】：你的回答必须包含以上全部5个段落标题（### 1. ~ ### 5.），缺少任何一段都视为不合格！尤其不能遗漏"### 5."的评级结论！"""
@@ -561,7 +629,7 @@ def analyze_with_llm(stock_dict, minute_feature_text, market_context, history_co
         response = llm_client.chat.completions.create(
             model=CONFIG["LLM_MODEL"],
             messages=[{"role": "system", "content": system_p}, {"role": "user", "content": user_prompt}],
-            max_tokens=4096 # 🆕 提升 max_tokens 防止截断
+            max_tokens=4096
         )
         reasoning = getattr(response.choices[0].message, 'reasoning_content', '')
         final = response.choices[0].message.content
@@ -570,19 +638,50 @@ def analyze_with_llm(stock_dict, minute_feature_text, market_context, history_co
         return str(e), f"❌ AI 调用失败: {e}"
 
 def get_minute_features(tf_client, tf_codes):
+    """V26.0 强化版：尾盘异动 + 分时均价线支撑判断"""
     features_map = {}
     for tf_code in tf_codes:
         try:
             df_k = tf_client.klines.get(tf_code, period="15m", count=16, as_dataframe=True)
-            if df_k is None or df_k.empty: features_map[tf_code] = "【分时缺失】"; continue
-            total_vol = pd.to_numeric(df_k['volume'], errors='coerce').sum()
-            tail_vol = pd.to_numeric(df_k['volume'].tail(2), errors='coerce').sum()
+            if df_k is None or df_k.empty: 
+                features_map[tf_code] = "【分时缺失】"
+                continue
+                
+            df_k['volume'] = pd.to_numeric(df_k['volume'], errors='coerce')
+            df_k['close'] = pd.to_numeric(df_k.get('close', df_k.get('last_price')), errors='coerce')
+            df_k['amount'] = pd.to_numeric(df_k.get('amount', 0), errors='coerce')
+            
+            total_vol = df_k['volume'].sum()
+            tail_vol = df_k['volume'].tail(2).sum()  # 尾盘30分钟 (2根15m K线)
             tail_ratio = (tail_vol / total_vol * 100) if total_vol > 0 else 0
-            logic_text = " (尾盘异动抢筹)" if tail_ratio > 25 else (" (尾盘平淡/资金流出)" if tail_ratio < 10 else "")
+            
+            # 计算全天均价 (VWAP)
+            total_amount = df_k['amount'].sum()
+            avg_price_all_day = (total_amount / total_vol) if total_vol > 0 and total_amount > 0 else df_k['close'].mean()
+            
+            # 获取尾盘最后的价格
+            last_price = df_k['close'].iloc[-1]
+            
+            # 🆕 V26.0 新增：计算尾盘均价 (最后2根K线的均价)
+            tail_avg_price = df_k['close'].tail(2).mean()
+            
+            # 🆕 V26.0 综合判断体系
+            logic_text = ""
+            if tail_ratio > 20 and last_price > avg_price_all_day and tail_avg_price > avg_price_all_day:
+                logic_text = " 🔥【尾盘主力抢筹+站稳均价线】(尾盘放量且价格高于全天均价，主力真金白银买入，次日溢价预期极高！)"
+            elif tail_ratio > 20 and last_price < avg_price_all_day:
+                logic_text = " 💀【尾盘主力抢跑】(尾盘放量但价格跳水，次日大概率低开，极度危险！)"
+            elif tail_ratio > 20 and last_price > avg_price_all_day and tail_avg_price <= avg_price_all_day:
+                logic_text = " ⚠️【尾盘偷袭拉尾盘】(虽然尾盘放量，但均价线未跟上，可能是主力做收盘价，次日谨防低开)"
+            elif tail_ratio < 10:
+                logic_text = " ⚠️【尾盘平庸/无量】(尾盘无资金关注)"
+            else:
+                logic_text = " (尾盘表现正常)"
+                
             features_map[tf_code] = f"尾盘30分量占比: {tail_ratio:.1f}%{logic_text}"
             time.sleep(0.05)
-        except:
-            features_map[tf_code] = "【分时异常】"
+        except Exception as e:
+            features_map[tf_code] = f"【分时异常: {e}】"
     return features_map
 
 # ================= 🚀 7. 增强版 HTML 报告导出模块 =================
@@ -647,7 +746,7 @@ def export_to_html_report(normal_results, demon_results, defense_results, watchl
     </style>
     """
     html_parts = [f"<!DOCTYPE html><html lang='zh-CN'><head><meta charset='UTF-8'><title>四轨制猎手复盘报告</title>{css_style}</head><body>"]
-    html_parts.append(f"<div class='header'><h1>👑 四轨制猎手实战报告</h1><p>生成时间: {safe_dates['now_str']} | 基准日(T日): {safe_dates['today']}</p></div>")
+    html_parts.append(f"<div class='header'><h1>👑 四轨制猎手实战报告 (V26.0)</h1><p>生成时间: {safe_dates['now_str']} | 基准日(T日): {safe_dates['today']}</p></div>")
     html_parts.append("<h2>🌍 今日大盘与情绪环境</h2>")
     html_parts.append(f"<div class='market-box'>{market_context}</div>")
     
@@ -690,7 +789,6 @@ def save_today_predictions(normal_res, demon_res, defense_res, safe_dates):
         st.warning("⚠️ 无法保存：Google Sheets 未连接或未配置 SPREADSHEET_URL。")
         return
         
-    # 🆕 防重复机制：检查今天是否已经存过数据
     try:
         sh = gc.open_by_url(spreadsheet_url)
         worksheet = sh.worksheet(SHEET_NAME)
@@ -710,7 +808,6 @@ def save_today_predictions(normal_res, demon_res, defense_res, safe_dates):
             row = item['row']
             final_text = item['final']
             
-            # 🆕 终极强悍的正则提取（兼容 AI 各种不规范的输出格式）
             buy_match = re.search(r'(?:买点|买入|竞价|目标).*?(\d{1,3}(?:\.\d{1,2})?)', final_text)
             stop_match = re.search(r'(?:止损|割肉|离场|跌破).*?(\d{1,3}(?:\.\d{1,2})?)', final_text)
             rating_match = re.search(r'评级[：:\s]*([SABC])', final_text, re.IGNORECASE)
@@ -743,7 +840,7 @@ def save_today_predictions(normal_res, demon_res, defense_res, safe_dates):
         st.warning("⚠️ 今日没有生成任何有效结果，跳过保存。")
 
 def run_autopsy(safe_dates):
-    """使用 gspread 读取历史记录并进行事后验尸"""
+    """使用 gspread 读取历史记录并进行事后验尸 (V26.0 完美反包版)"""
     if not gc or not spreadsheet_url: return
     
     try:
@@ -788,12 +885,20 @@ def run_autopsy(safe_dates):
                 ai_buy = float(row.get('AI建议买点', 0))
                 ai_stop = float(row.get('AI建议止损', 0))
                 
+                # 🆕 V26.0 获取 T+1 日的涨幅和量比
+                t1_pct_chg = real.get('pct_chg', 0)
+                t1_vol_ratio = real.get('vol_ratio', 1.0) 
+                
                 result = "数据不足"
                 if ai_buy > 0 and ai_stop > 0:
                     if t1_low <= ai_stop:
                         result = f"❌ 爆头止损 (最低{t1_low:.2f}破止损{ai_stop:.2f})"
                     elif t1_high >= ai_buy * 1.05:
-                        result = f"🏆 大肉止盈 (最高{t1_high:.2f})"
+                        # 🆕 V26.0 细分大肉止盈，如果是放量大涨，标记为"完美反包"
+                        if t1_pct_chg >= 5.0 and t1_vol_ratio >= 1.5:
+                            result = f"🏆🏆 完美缩量反包 (T+1涨{t1_pct_chg:.1f}%且放量{t1_vol_ratio:.1f}倍，策略完美验证！最高{t1_high:.2f})"
+                        else:
+                            result = f"🏆 大肉止盈 (最高{t1_high:.2f})"
                     elif t1_close > ai_buy:
                         result = f"✅ 浮盈收盘 (收{t1_close:.2f})"
                     else:
@@ -808,13 +913,13 @@ def run_autopsy(safe_dates):
                 
         if update_count > 0:
             completed = df_history[df_history['验尸结果'] != '待验尸']
-            win_rate = len(completed[completed['验尸结果'].str.contains('大肉|浮盈', na=False)]) / max(len(completed), 1) * 100
+            win_rate = len(completed[completed['验尸结果'].str.contains('大肉|浮盈|完美', na=False)]) / max(len(completed), 1) * 100
             st.success(f"💀 验尸完毕！更新了 {update_count} 条记录。AI 历史总胜率: **{win_rate:.1f}%**")
             
     except Exception as e:
         st.warning(f"验尸过程出现异常 (不影响今日复盘): {e}")
 
-# ================= 🆕 新增：导师 AI 进化引擎 =================
+# ================= 🆕 导师 AI 进化引擎 =================
 def generate_prompt_evolution(failed_cases_text, current_prompt_desc):
     if not llm_client:
         return "⚠️ 未配置大模型，无法进行进化分析", None
@@ -875,8 +980,8 @@ def generate_prompt_evolution(failed_cases_text, current_prompt_desc):
         return f"❌ 导师 AI 调用失败: {e}", None
 
 # ================= 8. Streamlit Web 主界面 =================
-st.set_page_config(page_title="V25.0 四轨猎魔策略 (AI进化版)", layout="wide")
-st.title("👑 四轨制猎手 V25.0 (AI 自我进化版)")
+st.set_page_config(page_title="V26.0 四轨猎魔策略 (AI进化版)", layout="wide")
+st.title("👑 四轨制猎手 V26.0 (AI 自我进化版)")
 
 safe_dates = get_safe_trade_dates()
 st.caption(f"📅 当前基准交易日: {safe_dates['today']} | 上一交易日: {safe_dates['yesterday']}")
@@ -903,7 +1008,7 @@ with st.sidebar:
     run_market_scan = st.button("🚀 全市场四轨扫描", type="primary", use_container_width=True)
     run_watchlist = st.button("👁️ 自选股深度诊断", type="secondary", use_container_width=True)
 
-# ================= 🆕 新增：Prompt 进化执行逻辑 =================
+# ================= 🆕 Prompt 进化执行逻辑 =================
 if run_prompt_evolution:
     if not llm_client:
         st.error("❌ 未配置 LLM 客户端，无法进行策略进化")
@@ -951,7 +1056,7 @@ if run_prompt_evolution:
             except Exception as e:
                 st.error(f"❌ 读取错题本失败: {e}")
 
-# 🆕 新增：展示进化分析结果与确认按钮
+# 🆕 展示进化分析结果与确认按钮
 if st.session_state.analysis_report and st.session_state.prompt_draft:
     st.header("🧬 AI 策略进化工作台")
     
@@ -977,7 +1082,7 @@ if st.session_state.analysis_report and st.session_state.prompt_draft:
 ### 1. 盘面语言解读 (结合【历史趋势快照】与今日量价，看透主力意图)
 ### 2. 流动性与量化排雷
 ### 3. 次日(T+1)竞价与买点策略 (必须分情况讨论：次日高开/平开/低开的应对买点，展示基于今日收盘价和昨收价的计算过程，精确到分)
-### 4. 断臂求生止损位 (基于次日买入后的持仓成本，给出动态止损价计算过程)
+### 4. 断臂求生止损位 (基于次日买入后的持仓成本，给出动态止损价计算过程，包含时间止损规则)
 
 你必须以如下格式结束你的回答（不可省略）：
 ---
@@ -985,6 +1090,7 @@ if st.session_state.analysis_report and st.session_state.prompt_draft:
 - **综合评级**：【S/A/B/C 中选一个】
 - **仓位建议**：【X成仓位】
 - **信心指数**：【1-10分】
+- **时间止损**：【买入后X分钟不突破则离场】
 - **一句话总结**：【20字以内】
 
 ⚠️ 【强制输出要求】：你的回答必须包含以上全部5个段落标题（### 1. ~ ### 5.），缺少任何一段都视为不合格！尤其不能遗漏"### 5."的评级结论！"""
@@ -996,7 +1102,7 @@ if st.session_state.analysis_report and st.session_state.prompt_draft:
 ### 1. 妖气指数与龙头信仰 (结合【历史趋势快照】分析连板高度、市场身位及今日盘口语言)
 ### 2. 死亡换手与流动性排雷 (结合成交额、换手率分析当前筹码断层风险)
 ### 3. 次日(T+1)竞价与买点策略 (必须分情况讨论：次日高开>3%如何抢筹/平开如何半路/低开如何放弃，展示基于今日收盘价和昨收价的计算过程，精确到分)
-### 4. 断臂求生止损位 (基于次日买入后的预估持仓成本，给出动态止损价计算过程)
+### 4. 断臂求生止损位 (基于次日买入后的预估持仓成本，给出动态止损价计算过程，包含时间止损规则)
 
 你必须以如下格式结束你的回答（不可省略）：
 ---
@@ -1004,6 +1110,7 @@ if st.session_state.analysis_report and st.session_state.prompt_draft:
 - **综合评级**：【S/A/B/C 中选一个】
 - **仓位建议**：【X成仓位】
 - **信心指数**：【1-10分】
+- **时间止损**：【买入后X分钟不突破则离场】
 - **一句话总结**：【20字以内】
 
 ⚠️ 【强制输出要求】：你的回答必须包含以上全部5个段落标题（### 1. ~ ### 5.），缺少任何一段都视为不合格！尤其不能遗漏"### 5."的评级结论！"""
@@ -1015,7 +1122,7 @@ if st.session_state.analysis_report and st.session_state.prompt_draft:
 ### 1. 逆风强度与突破逻辑 (结合【历史趋势快照】与今日量价背离，分析突破有效性)
 ### 2. 筹码结构与量能健康度
 ### 3. 次日(T+1)竞价与买点策略 (必须分情况讨论：次日高开如何追/平开如何伏击/低开或急跌如何低吸，展示基于今日收盘价和昨收价的计算过程，精确到分)
-### 4. 断臂求生止损位 (基于次日买入后的预估持仓成本，给出动态止损价计算过程，跌破某关键位必须无条件离场)
+### 4. 断臂求生止损位 (基于次日买入后的预估持仓成本，给出动态止损价计算过程，包含时间止损规则，跌破某关键位必须无条件离场)
 
 你必须以如下格式结束你的回答（不可省略）：
 ---
@@ -1023,6 +1130,7 @@ if st.session_state.analysis_report and st.session_state.prompt_draft:
 - **综合评级**：【S/A/B/C 中选一个】
 - **仓位建议**：【X成仓位】
 - **信心指数**：【1-10分】
+- **时间止损**：【买入后X分钟不突破则离场】
 - **一句话总结**：【20字以内】
 
 ⚠️ 【强制输出要求】：你的回答必须包含以上全部5个段落标题（### 1. ~ ### 5.），缺少任何一段都视为不合格！尤其不能遗漏"### 5."的评级结论！"""
@@ -1220,7 +1328,7 @@ if run_market_scan or run_watchlist:
         else:
             st.warning("⚠️ 未获取到有效自选股数据，请检查代码输入是否正确")
 
-# ================= 📥 全局下载按钮 (防止 rerun 导致按钮消失) =================
+# ================= 📥 全局下载按钮 =================
 st.divider()
 if st.session_state.get("html_report_data"):
     st.subheader("📥 下载报告")
