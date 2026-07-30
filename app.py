@@ -503,9 +503,8 @@ ANTI_HALLUCINATION_RULES = """
 1.【禁编数据】所有价格必须基于我提供的真实数据计算并展示公式，精确到分。严禁编造历史/题材/财务数据。若最高=最低=现价，说明数据缺失，须基于昨收+涨幅反推区间。
 2.【散户视角】我资金<50万，追求一击必杀的确定性。直接给结论：买/不买？什么价买？什么价割？拒绝端水。
 3.【T+1条件策略】基于T日收盘复盘，制定次日买入计划。必须分3档：高开>2% / 平开±1% / 低开>2%，每档给不同买点和仓位。
-4.【板块排雷】若标的所属板块今日领跌或无资金关注，强制降为C级，注明"缺乏板块共振"。
-5.【时间止损】买入后30分钟未突破成本价2%→立刻平仓；全天织布机震荡(±1%)→14:45前清仓。小资金时间成本=生命，严禁"再看看"。
-6.【冲高防御】次日9:30-10:00冲高>4%后15分钟内回落>2%→立刻止盈一半，剩余仓位止损上移至成本价。
+4.【时间止损】买入后30分钟未突破成本价2%→立刻平仓；全天织布机震荡(±1%)→14:45前清仓。小资金时间成本=生命，严禁"再看看"。
+5.【冲高防御】次日9:30-10:00冲高>4%后15分钟内回落>2%→立刻止盈一半，剩余仓位止损上移至成本价。
 """
 
 STRUCTURED_OUTPUT_SUFFIX = """
@@ -513,14 +512,9 @@ STRUCTURED_OUTPUT_SUFFIX = """
 ⚠️⚠️⚠️ 【强制输出格式 - 违反即作废】⚠️⚠️⚠️
 
 你的回答必须严格遵守以下规则：
-1. 正文分析部分：每段最多3句话，总字数不超过800字。禁止写长篇大论。
-2. 正文必须使用以下5个标题（一字不改）：
-   ### 1. 盘面语言
-   ### 2. 量化排雷
-   ### 3. T+1买点策略
-   ### 4. 止损位
-   ### 5. 猎手评级
-3. 在"### 5. 猎手评级"段中，必须包含以下5行（一字不改格式）：
+1. 正文分析部分：每段3-6句话，总字数800-1500字。信息密度高，每句话必须有数据支撑或逻辑推演，禁止废话套话。
+2. 正文段落标题：严格按照 system prompt 中定义的段落标题输出，不得自行更改或遗漏。
+3. 最后一段（评级段）中，必须包含以下5行（一字不改格式）：
    - **评级**：S/A/B/C（四选一）
    - **仓位**：X成
    - **信心**：X/10
@@ -533,9 +527,9 @@ STRUCTURED_OUTPUT_SUFFIX = """
 
 PROMPT_NORMAL = f"""你是A股15年实战游资，精通"缩量洗盘反包"与"反量化埋伏"。
 {ANTI_HALLUCINATION_RULES}
-按以下格式输出(每段最多3句，总字数≤800字，精炼直击要害)：
+按以下格式输出(每段3-6句，总字数800-1500字，信息密度高，禁止废话)：
 ### 1. 盘面语言 (结合历史快照+今日量价，看透主力意图)
-### 2. 量化排雷 (流动性/筹码断层/板块风险)
+### 2. 量化排雷 (流动性/筹码断层)
 ### 3. T+1买点策略 (分高开/平开/低开三档，展示计算过程)
 ### 4. 止损位 (价格止损+时间止损，展示计算过程)
 ### 5. 猎手评级
@@ -547,9 +541,9 @@ PROMPT_NORMAL = f"""你是A股15年实战游资，精通"缩量洗盘反包"与"
 
 PROMPT_DEMON = f"""你是A股15年实战游资，精通"龙头首阴反包"与"妖股情绪博弈"。
 {ANTI_HALLUCINATION_RULES}
-按以下格式输出(每段最多3句，总字数≤800字，精炼直击要害)：
+按以下格式输出(每段3-6句，总字数800-1500字，信息密度高，禁止废话)：
 ### 1. 妖气指数 (连板高度/市场身位/盘口语言)
-### 2. 死亡换手排雷 (筹码断层/流动性/板块风险)
+### 2. 死亡换手排雷 (筹码断层/流动性)
 ### 3. T+1买点策略 (高开>3%抢筹/平开半路/低开放弃，展示计算)
 ### 4. 止损位 (价格止损+时间止损，展示计算过程)
 ### 5. 猎手评级
@@ -561,9 +555,9 @@ PROMPT_DEMON = f"""你是A股15年实战游资，精通"龙头首阴反包"与"�
 
 PROMPT_DEFENSE = f"""你是精通"弱市逆风突破"的A股猎手。大盘萎靡时寻找逆市真金。
 {ANTI_HALLUCINATION_RULES}
-按以下格式输出(每段最多3句，总字数≤800字，精炼直击要害)：
+按以下格式输出(每段3-6句，总字数800-1500字，信息密度高，禁止废话)：
 ### 1. 逆风强度 (量价背离/突破有效性)
-### 2. 筹码健康度 (量能/套牢盘/板块风险)
+### 2. 筹码健康度 (量能/套牢盘)
 ### 3. T+1买点策略 (高开追/平开伏击/低开低吸，展示计算)
 ### 4. 止损位 (价格止损+时间止损，展示计算过程)
 ### 5. 逆风评级
@@ -575,7 +569,7 @@ PROMPT_DEFENSE = f"""你是精通"弱市逆风突破"的A股猎手。大盘萎�
 
 PROMPT_WATCHLIST = f"""你是冷酷的"账户急救操盘手"。客户自选股全部套牢，只讲残酷真相和操作纪律。
 {ANTI_HALLUCINATION_RULES}
-按以下格式输出(每段最多3句，总字数≤800字，精炼直击要害)：
+按以下格式输出(每段3-6句，总字数800-1500字，信息密度高，禁止废话)：
 ### 1. 套牢诊断 (套牢深度/上方压力/趋势阶段)
 ### 2. 反弹动能 (量价结构/做T空间/破位信号)
 ### 3. 急救决断 (四选一，严禁模棱两可)：
@@ -626,7 +620,7 @@ def analyze_with_llm(stock_dict, minute_feature_text, market_context, history_co
                 {"role": "system", "content": system_p},
                 {"role": "user", "content": user_prompt}
             ],
-            max_tokens=16384
+            max_tokens=32768
         )
         reasoning = getattr(response.choices[0].message, 'reasoning_content', '') or ''
         final = response.choices[0].message.content or ''
@@ -677,6 +671,16 @@ def get_minute_features(tf_client, tf_codes):
     return features_map
 
 # ================= 🚀 7. 增强版 HTML 报告导出模块 =================
+def clean_display_text(final_text):
+    """从显示文本中剥离末尾的JSON结构化数据和分隔线"""
+    if not final_text:
+        return final_text
+    # 移除末尾的JSON块
+    cleaned = re.sub(r'\n?\{[^{}]*"rating"[^{}]*\}\s*$', '', final_text)
+    # 移除 STRUCTURED_OUTPUT_SUFFIX 的分隔线（如果AI回显了）
+    cleaned = re.sub(r'━{5,}.*?━{5,}', '', cleaned, flags=re.DOTALL)
+    return cleaned.strip()
+    
 def robust_md_to_html(md_text):
     if not md_text: return "<p>【暂无分析内容】</p>"
     html = md_text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
@@ -748,7 +752,7 @@ def export_to_html_report(normal_results, demon_results, defense_results, watchl
         for item in results:
             row, final = item['row'], item['final']
             pct_color = "#e74c3c" if row['pct_chg'] >= 0 else "#27ae60"
-            analysis_html = robust_md_to_html(final)
+            analysis_html = robust_md_to_html(clean_display_text(final))
             track_html += f"""
             <div class="stock-card">
                 <div class="stock-header">
@@ -1041,7 +1045,7 @@ def generate_prompt_evolution(failed_cases_text, current_prompt_desc):
                 {"role": "user", "content": user_prompt}
             ],
             # 🔧 FIX-6: max_tokens 从 3000 提升至 8192，防止导师 AI 输出被截断
-            max_tokens=16384
+            max_tokens=32768
         )
         full_response = response.choices[0].message.content or ''
         
@@ -1282,7 +1286,7 @@ if run_market_scan or run_watchlist:
         normal_df = filter_normal_stocks(df)
         if not normal_df.empty:
             normal_df = calculate_real_vol_ratio(normal_df)
-            normal_df = normal_df[normal_df['vol_ratio'] <= 0.9].head(CONFIG['TOP_N_NORMAL'])
+            normal_df = normal_df[normal_df['vol_ratio'] <= 1.2].head(CONFIG['TOP_N_NORMAL'])
             
         st.info("🐉 【轨道二】扫描主板妖股...")
         demon_df = filter_demon_stocks(df)
@@ -1348,7 +1352,7 @@ if run_market_scan or run_watchlist:
                 row, reasoning, final = item['row'], item['reasoning'], item['final']
                 with st.expander(f"[{idx}] {row['name']} ({row['code']}) | 涨幅:{row['pct_chg']:.1f}% 换手:{row['turnover']:.1f}%"):
                     if reasoning: st.caption(f"🧠 脑内推演: {reasoning[:500]}...")
-                    st.markdown(final)
+                    st.markdown(clean_display_text(final))
         else: st.warning("今日暂无符合轨道一条件的标的")
         
         st.subheader("🐉 轨道二：主板妖股池")
@@ -1357,7 +1361,7 @@ if run_market_scan or run_watchlist:
                 row, reasoning, final = item['row'], item['reasoning'], item['final']
                 with st.expander(f"[{idx}] {row['name']} ({row['code']}) | 涨幅:{row['pct_chg']:.1f}% 换手:{row['turnover']:.1f}%"):
                     if reasoning: st.caption(f"🧠 脑内推演: {reasoning[:500]}...")
-                    st.markdown(final)
+                    st.markdown(clean_display_text(final))
         else: st.warning("今日暂无符合轨道二条件的标的")
         
         st.subheader("🔥 轨道三：逆风突破池")
@@ -1366,7 +1370,7 @@ if run_market_scan or run_watchlist:
                 row, reasoning, final = item['row'], item['reasoning'], item['final']
                 with st.expander(f"[{idx}] {row['name']} ({row['code']}) | 涨幅:{row['pct_chg']:.1f}% 换手:{row['turnover']:.1f}%"):
                     if reasoning: st.caption(f"🧠 脑内推演: {reasoning[:500]}...")
-                    st.markdown(final)
+                    st.markdown(clean_display_text(final))
         else: st.info("今日大盘情绪强势，逆风池未激活 (或无符合条件标的)")
             
         st.divider()
@@ -1401,7 +1405,7 @@ if run_market_scan or run_watchlist:
                 pct_color = "red" if row['pct_chg'] < 0 else "green"
                 with st.expander(f"🩸 [{idx}] {row['name']} ({row['code']}) | 当前价:{row['close']:.2f} | 今日涨幅: :{pct_color}[{row['pct_chg']:.1f}%]"):
                     if reasoning: st.caption(f"🧠 操盘手脑内推演: {reasoning[:500]}...")
-                    st.markdown(final)
+                    st.markdown(clean_display_text(final))
                     
             st.divider()
             html_data = export_to_html_report([], [], [], watchlist_results, market_context, safe_dates)
