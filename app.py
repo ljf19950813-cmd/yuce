@@ -497,7 +497,7 @@ def get_history_context(tf_client, tf_code):
     except Exception as e:
         return f"【历史数据获取异常: {e}】"
 
-# ================= 6. 纯净版 Prompt (V26.0 小资金快进快出铁律) =================
+# ================= 6. 纯净版 Prompt (V27.0 强制结构化输出版) =================
 ANTI_HALLUCINATION_RULES = """
 ⚠️ 游资铁律（违反=严重亏损）：
 1.【禁编数据】所有价格必须基于我提供的真实数据计算并展示公式，精确到分。严禁编造历史/题材/财务数据。若最高=最低=现价，说明数据缺失，须基于昨收+涨幅反推区间。
@@ -508,9 +508,32 @@ ANTI_HALLUCINATION_RULES = """
 6.【冲高防御】次日9:30-10:00冲高>4%后15分钟内回落>2%→立刻止盈一半，剩余仓位止损上移至成本价。
 """
 
+STRUCTURED_OUTPUT_SUFFIX = """
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⚠️⚠️⚠️ 【强制输出格式 - 违反即作废】⚠️⚠️⚠️
+
+你的回答必须严格遵守以下规则：
+1. 正文分析部分：每段最多3句话，总字数不超过800字。禁止写长篇大论。
+2. 正文必须使用以下5个标题（一字不改）：
+   ### 1. 盘面语言
+   ### 2. 量化排雷
+   ### 3. T+1买点策略
+   ### 4. 止损位
+   ### 5. 猎手评级
+3. 在"### 5. 猎手评级"段中，必须包含以下5行（一字不改格式）：
+   - **评级**：S/A/B/C（四选一）
+   - **仓位**：X成
+   - **信心**：X/10
+   - **时间止损**：X分钟
+   - **一句话**：（20字内）
+4. 在回答的最末尾，必须单独一行输出一个JSON对象（用花括号包裹），格式如下：
+   {"rating":"S或A或B或C","buy_price":数字,"stop_price":数字,"position":"X成","confidence":数字,"time_stop":数字,"summary":"20字内"}
+   其中 buy_price 和 stop_price 必须是合理股价（与当前价偏差不超过±15%），严禁填入成交量、时间等非价格数字。
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"""
+
 PROMPT_NORMAL = f"""你是A股15年实战游资，精通"缩量洗盘反包"与"反量化埋伏"。
 {ANTI_HALLUCINATION_RULES}
-按以下格式输出(每段2-4句，精炼直击要害)：
+按以下格式输出(每段最多3句，总字数≤800字，精炼直击要害)：
 ### 1. 盘面语言 (结合历史快照+今日量价，看透主力意图)
 ### 2. 量化排雷 (流动性/筹码断层/板块风险)
 ### 3. T+1买点策略 (分高开/平开/低开三档，展示计算过程)
@@ -520,12 +543,11 @@ PROMPT_NORMAL = f"""你是A股15年实战游资，精通"缩量洗盘反包"与"
 - **仓位**：X成
 - **信心**：1-10分
 - **时间止损**：X分钟不突破则离场
-- **一句话**：20字内
-⚠️ 必须输出全部5段，尤其不能漏掉### 5！"""
+- **一句话**：20字内"""
 
 PROMPT_DEMON = f"""你是A股15年实战游资，精通"龙头首阴反包"与"妖股情绪博弈"。
 {ANTI_HALLUCINATION_RULES}
-按以下格式输出(每段2-4句，精炼直击要害)：
+按以下格式输出(每段最多3句，总字数≤800字，精炼直击要害)：
 ### 1. 妖气指数 (连板高度/市场身位/盘口语言)
 ### 2. 死亡换手排雷 (筹码断层/流动性/板块风险)
 ### 3. T+1买点策略 (高开>3%抢筹/平开半路/低开放弃，展示计算)
@@ -535,12 +557,11 @@ PROMPT_DEMON = f"""你是A股15年实战游资，精通"龙头首阴反包"与"�
 - **仓位**：X成
 - **信心**：1-10分
 - **时间止损**：X分钟不突破则离场
-- **一句话**：20字内
-⚠️ 必须输出全部5段，尤其不能漏掉### 5！"""
+- **一句话**：20字内"""
 
 PROMPT_DEFENSE = f"""你是精通"弱市逆风突破"的A股猎手。大盘萎靡时寻找逆市真金。
 {ANTI_HALLUCINATION_RULES}
-按以下格式输出(每段2-4句，精炼直击要害)：
+按以下格式输出(每段最多3句，总字数≤800字，精炼直击要害)：
 ### 1. 逆风强度 (量价背离/突破有效性)
 ### 2. 筹码健康度 (量能/套牢盘/板块风险)
 ### 3. T+1买点策略 (高开追/平开伏击/低开低吸，展示计算)
@@ -550,28 +571,38 @@ PROMPT_DEFENSE = f"""你是精通"弱市逆风突破"的A股猎手。大盘萎�
 - **仓位**：X成
 - **信心**：1-10分
 - **时间止损**：X分钟不突破则离场
-- **一句话**：20字内
-⚠️ 必须输出全部5段，尤其不能漏掉### 5！"""
+- **一句话**：20字内"""
 
 PROMPT_WATCHLIST = f"""你是冷酷的"账户急救操盘手"。客户自选股全部套牢，只讲残酷真相和操作纪律。
 {ANTI_HALLUCINATION_RULES}
-按以下格式输出(每段2-4句，精炼直击要害)：
+按以下格式输出(每段最多3句，总字数≤800字，精炼直击要害)：
 ### 1. 套牢诊断 (套牢深度/上方压力/趋势阶段)
 ### 2. 反弹动能 (量价结构/做T空间/破位信号)
 ### 3. 急救决断 (四选一，严禁模棱两可)：
    🩸割肉 | 🛌装死 | 🔄做T | 💰补仓
-### 4. 操作锚点 (做T买卖点/补仓位/清仓破位价，展示计算)"""
+### 4. 操作锚点 (做T买卖点/补仓位/清仓破位价，展示计算)
+### 5. 猎手评级
+- **评级**：S/A/B/C
+- **仓位**：X成
+- **信心**：1-10分
+- **时间止损**：X分钟不突破则离场
+- **一句话**：20字内"""
 
 def analyze_with_llm(stock_dict, minute_feature_text, market_context, history_context, mode="normal"):
-    if not llm_client: return "⚠️ 未配置大模型", "⚠️ 无Key"
+    if not llm_client:
+        return "⚠️ 未配置大模型", "⚠️ 无Key"
     news_context = "【请纯粹基于盘面量价与情绪进行推演】"
-    
+
     active_prompts = st.session_state.get("active_prompts", {})
-    if mode == "demon": system_p = active_prompts.get("demon", PROMPT_DEMON)
-    elif mode == "defense": system_p = active_prompts.get("defense", PROMPT_DEFENSE)
-    elif mode == "watchlist": system_p = active_prompts.get("watchlist", PROMPT_WATCHLIST)
-    else: system_p = active_prompts.get("normal", PROMPT_NORMAL)
-    
+    if mode == "demon":
+        system_p = active_prompts.get("demon", PROMPT_DEMON)
+    elif mode == "defense":
+        system_p = active_prompts.get("defense", PROMPT_DEFENSE)
+    elif mode == "watchlist":
+        system_p = active_prompts.get("watchlist", PROMPT_WATCHLIST)
+    else:
+        system_p = active_prompts.get("normal", PROMPT_NORMAL)
+
     price_info = f"""
 【真实价格锚点 (严禁瞎编，必须基于此计算，展示公式)】
 - 当前价: {stock_dict.get('close', '未知')} 元
@@ -585,20 +616,18 @@ def analyze_with_llm(stock_dict, minute_feature_text, market_context, history_co
 【股票】: {stock_dict.get('name')} ({stock_dict.get('code')}) | {stock_dict.get('board')}
 【数据】: 涨幅 {stock_dict.get('pct_chg', 0):.2f}%, 量比 {stock_dict.get('vol_ratio', 0):.2f}, 成交额 {stock_dict.get('amount', 0)/100000000:.1f}亿, 换手 {stock_dict.get('turnover', 0):.2f}%
 【分时】: {minute_feature_text}
-⚠️ 【交易计划】：我将于【明日（T+1日）】进行买入操作。请基于上述T日收盘数据，为我制定明日的集合竞价观察点及盘中条件买入策略。"""
-    
+⚠️ 【交易计划】：我将于【明日（T+1日）】进行买入操作。请基于上述T日收盘数据，为我制定明日的集合竞价观察点及盘中条件买入策略。
+{STRUCTURED_OUTPUT_SUFFIX}"""
+
     try:
-        # 🔧 FIX-1: 删除 stream=True（Stream 对象无 .choices 属性，必崩）
-        # 🔧 FIX-5: timeout 已在客户端初始化时提升至 180s，无需流式规避超时
         response = llm_client.chat.completions.create(
             model=CONFIG["LLM_MODEL"],
             messages=[
                 {"role": "system", "content": system_p},
                 {"role": "user", "content": user_prompt}
             ],
-            max_tokens=32768
+            max_tokens=16384
         )
-        # 🔧 FIX-2: 加 or '' 兜底，防止 reasoning_content 为 None 时切片崩溃
         reasoning = getattr(response.choices[0].message, 'reasoning_content', '') or ''
         final = response.choices[0].message.content or ''
         return reasoning, final
@@ -746,21 +775,110 @@ def export_to_html_report(normal_results, demon_results, defense_results, watchl
     return "\n".join(html_parts).encode('utf-8')
 
 # ================= 💀 核心功能：AI 策略"事后验尸"与数据记录 =================
+def extract_price_from_text(final_text, close_price, price_type="buy"):
+    """
+    V27.0 智能价格提取器：
+    1. 优先从 JSON 块提取
+    2. 兜底：从文本中提取所有数字，用收盘价做合理性过滤
+    """
+    # ===== 第一优先级：从 JSON 块提取 =====
+    json_match = re.search(r'\{[^{}]*"rating"[^{}]*\}', final_text)
+    if json_match:
+        try:
+            data = json.loads(json_match.group(0))
+            if price_type == "buy" and "buy_price" in data:
+                val = float(data["buy_price"])
+                if close_price * 0.7 <= val <= close_price * 1.3:
+                    return val
+            elif price_type == "stop" and "stop_price" in data:
+                val = float(data["stop_price"])
+                if close_price * 0.7 <= val <= close_price * 1.3:
+                    return val
+        except (json.JSONDecodeError, ValueError, TypeError):
+            pass
+
+    # ===== 第二优先级：从评级段正则提取 =====
+    if price_type == "buy":
+        patterns = [
+            r'(?:买点|买入价|介入价|介入点)[：:\s]*(\d{1,3}\.\d{1,2})',
+            r'(?:买点|买入|介入).*?(\d{1,3}\.\d{1,2})\s*元',
+        ]
+    else:
+        patterns = [
+            r'(?:止损价|止损位|止损)[：:\s]*(\d{1,3}\.\d{1,2})',
+            r'(?:止损|割肉|离场|跌破).*?(\d{1,3}\.\d{1,2})\s*元',
+        ]
+
+    for pattern in patterns:
+        matches = re.findall(pattern, final_text)
+        for m in matches:
+            val = float(m)
+            if close_price * 0.7 <= val <= close_price * 1.3:
+                return val
+
+    # ===== 第三优先级：提取所有合理价格，取最接近收盘价的 =====
+    all_prices = re.findall(r'(\d{1,3}\.\d{2})\s*元', final_text)
+    valid_prices = []
+    for p in all_prices:
+        val = float(p)
+        if close_price * 0.8 <= val <= close_price * 1.2:
+            valid_prices.append(val)
+
+    if valid_prices:
+        if price_type == "buy":
+            above = [p for p in valid_prices if p >= close_price * 0.98]
+            return min(above, key=lambda x: abs(x - close_price)) if above else valid_prices[0]
+        else:
+            below = [p for p in valid_prices if p < close_price]
+            return max(below) if below else valid_prices[0]
+
+    return 0.0
+
+
+def extract_rating_from_text(final_text):
+    """V27.0 评级提取：优先 JSON，兜底正则"""
+    # 优先从 JSON 提取
+    json_match = re.search(r'\{[^{}]*"rating"[^{}]*\}', final_text)
+    if json_match:
+        try:
+            data = json.loads(json_match.group(0))
+            rating = str(data.get("rating", "")).upper().strip()
+            if rating in ("S", "A", "B", "C"):
+                return rating
+        except (json.JSONDecodeError, ValueError, TypeError):
+            pass
+
+    # 兜底：从 "### 5" 段落中提取
+    section5_match = re.search(
+        r'###\s*5[.、]?\s*.*?(?:评级|综合评级|逆风评级)[：:\s]*\*{0,2}([SABC])\*{0,2}',
+        final_text, re.IGNORECASE | re.DOTALL
+    )
+    if section5_match:
+        return section5_match.group(1).upper()
+
+    # 再兜底：全文找 "**评级**：X" 格式
+    rating_match = re.search(r'\*\*评级\*\*[：:\s]*([SABC])', final_text, re.IGNORECASE)
+    if rating_match:
+        return rating_match.group(1).upper()
+
+    return "未评级"
+
+
 def save_today_predictions(normal_res, demon_res, defense_res, safe_dates):
-    """使用 gspread 将今日预测写入 Google Sheets 的 Sheet1"""
+    """V27.0 使用智能价格提取器"""
     if not gc or not spreadsheet_url:
         st.warning("⚠️ 无法保存：Google Sheets 未连接或未配置 SPREADSHEET_URL。")
         return
-        
+
     try:
         sh = gc.open_by_url(spreadsheet_url)
         worksheet = sh.worksheet(SHEET_NAME)
         existing_data = worksheet.get_all_values()
-        
+
         if len(existing_data) > 1:
             existing_dates = [row[0] for row in existing_data[1:]]
             if safe_dates['today'] in existing_dates:
-                st.warning(f"⚠️ **防重复拦截**：系统检测到 {safe_dates['today']} 的预测数据已存在。为避免明日验尸胜率被重复数据污染，本次扫描结果**不再重复写入**表格。")
+                st.warning(f"⚠️ **防重复拦截**：{safe_dates['today']} 已存在，跳过写入。")
                 return
     except Exception as e:
         logging.error(f"检查重复数据失败: {e}")
@@ -770,37 +888,32 @@ def save_today_predictions(normal_res, demon_res, defense_res, safe_dates):
         for item in res_list:
             row = item['row']
             final_text = item['final']
-            
-            buy_match = re.search(r'(?:买点|买入|竞价|目标).*?(\d{1,3}(?:\.\d{1,2})?)', final_text)
-            stop_match = re.search(r'(?:止损|割肉|离场|跌破).*?(\d{1,3}(?:\.\d{1,2})?)', final_text)
-            # 🔧 FIX-3: 删除危险的 \b([SABC])\b 兜底正则（会误匹配"A股""S级"等）
-            # 仅保留精确匹配评级格式的正则，未匹配则标记"未评级"
-            rating_match = re.search(r'(?:评级|综合评级|逆风评级)[：:\s]*\*{0,2}([SABC])\*{0,2}', final_text, re.IGNORECASE)
-            
-            buy_price = float(buy_match.group(1)) if buy_match else 0.0
-            stop_price = float(stop_match.group(1)) if stop_match else 0.0
-            rating = rating_match.group(1).upper() if rating_match else "未评级"
-            
+            close_price = float(row['close'])
+
+            buy_price = extract_price_from_text(final_text, close_price, "buy")
+            stop_price = extract_price_from_text(final_text, close_price, "stop")
+            rating = extract_rating_from_text(final_text)
+
             all_results.append([
                 safe_dates['today'],
                 row['name'],
                 row['code'],
                 track_name,
-                round(row['close'], 2),
-                buy_price,
-                stop_price,
+                round(close_price, 2),
+                round(buy_price, 2),
+                round(stop_price, 2),
                 rating,
                 final_text,
                 None, None, None,
                 "待验尸"
             ])
-            
+
     if all_results:
         try:
             worksheet.append_rows(all_results)
-            st.success(f"✅ 已将今日 {len(all_results)} 条 AI 策略存入云端！(已自动过滤重复提交)")
+            st.success(f"✅ 已将今日 {len(all_results)} 条 AI 策略存入云端！")
         except Exception as e:
-            st.error(f"❌ 存入 Google Sheets 失败: {e}。请检查表格表头是否为：日期,股票名称,代码,轨道,T日收盘,AI建议买点,AI建议止损,猎手评级,AI预测理由,T+1日最高,T+1日最低,T+1日收盘,验尸结果")
+            st.error(f"❌ 存入 Google Sheets 失败: {e}")
     else:
         st.warning("⚠️ 今日没有生成任何有效结果，跳过保存。")
 
@@ -928,7 +1041,7 @@ def generate_prompt_evolution(failed_cases_text, current_prompt_desc):
                 {"role": "user", "content": user_prompt}
             ],
             # 🔧 FIX-6: max_tokens 从 3000 提升至 8192，防止导师 AI 输出被截断
-            max_tokens=8192
+            max_tokens=16384
         )
         full_response = response.choices[0].message.content or ''
         
