@@ -12,6 +12,9 @@ import httpx
 import streamlit as st
 import json
 
+# 🔧 FIX-4: st.set_page_config 必须是第一个 Streamlit 命令，移至最顶部
+st.set_page_config(page_title="V26.0 四轨猎魔策略 (AI进化版)", layout="wide")
+
 # ================= 🕒 时区修复：强制锁定北京时间 =================
 try:
     from zoneinfo import ZoneInfo
@@ -90,7 +93,8 @@ if CONFIG["LLM_API_KEY"] != "YOUR_LLM_API_KEY":
         llm_client = OpenAI(
             api_key=CONFIG["LLM_API_KEY"], 
             base_url=CONFIG["LLM_BASE_URL"],
-            timeout=httpx.Timeout(60.0, connect=15.0)
+            # 🔧 FIX-5: 超时从 60s 提升至 180s（V4 思考模式 + 32K 输出需要更长时间）
+            timeout=httpx.Timeout(180.0, connect=15.0)
         )
     except Exception as e:
         logging.error(f"LLM 客户端初始化失败: {e}")
@@ -341,13 +345,9 @@ def filter_normal_stocks(df):
     df = df[~df['name'].str.contains('ST|退', na=False)]
     df = df[df['board'].isin(['Main', 'GEM'])]
     
-    # 🆕 V26.0 强化：成交额"黄金区间" (2亿 ~ 15亿)
-    # 小于2亿是僵尸股主力拉不动；大于15亿是明牌大票散户接力易接飞刀
     main_mask = (df['board'] == 'Main') & (df['pct_chg'] >= 2.0) & (df['pct_chg'] <= 7.5)
     gem_mask = (df['board'] == 'GEM') & (df['pct_chg'] >= 2.0) & (df['pct_chg'] <= 15.0)
     common_mask = (df['amount'] >= 200000000) & (df['amount'] <= 1500000000) & (df['turnover'] <= 20.0)
-    
-    # 🆕 V26.0 强化：剔除超低价股 (<3元)，低价股往往是基本面有问题的垃圾股
     price_mask = df['close'] >= 3.0
     
     return df[(main_mask | gem_mask) & common_mask & price_mask].sort_values(by='turnover', ascending=True).head(30)
@@ -391,7 +391,7 @@ def filter_defense_stocks(df, tf_client, market_avg_pct=0.0):
 def calculate_real_vol_ratio(candidate_df):
     """V26.0 强化版：量比计算 + MA20趋势过滤 + 筹码断层检测"""
     real_vol_ratios = []
-    chip_gap_warnings = []  # 🆕 存储筹码断层警告信息
+    chip_gap_warnings = []
     
     for _, row in candidate_df.iterrows():
         try:
@@ -401,14 +401,11 @@ def calculate_real_vol_ratio(candidate_df):
                 today_close = pd.to_numeric(df_k.iloc[-1].get('close', df_k.iloc[-1].get('last_price')), errors='coerce')
                 today_high = pd.to_numeric(df_k.iloc[-1].get('high', df_k.iloc[-1].get('high_price')), errors='coerce')
                 
-                # 计算过去5天平均成交量
                 past_5d_avg_vol = pd.to_numeric(df_k.iloc[-6:-1]['volume'], errors='coerce').mean()
                 vol_ratio = today_vol / past_5d_avg_vol if past_5d_avg_vol > 0 else 99.0
                 
-                # 计算 20日均线 (MA20)
                 ma20 = pd.to_numeric(df_k['close'].tail(20), errors='coerce').mean()
                 
-                # 🛡️ 防假缩量核心逻辑 —— 跌破 MA20 直接淘汰
                 if today_close < ma20:
                     vol_ratio = 99.0
                     chip_gap_warnings.append(f"⚠️ {row['name']} 跌破MA20({ma20:.2f})，空头趋势已强制过滤。")
@@ -416,12 +413,9 @@ def calculate_real_vol_ratio(candidate_df):
                     time.sleep(0.05)
                     continue
                 
-                # 🆕 V26.0 核心优化：筹码断层检测 (Chip Gap Detection)
-                # 逻辑：扫描过去10天内，是否存在"放量大阴线" (跌幅>5% 且 成交量>5日均量1.5倍)
                 chip_gap_found = False
                 chip_gap_price = 0.0
-                chip_gap_date = ""
-                for i in range(-10, -1):  # 扫描倒数第10天到倒数第2天 (不包含今天)
+                for i in range(-10, -1):
                     try:
                         d_close = pd.to_numeric(df_k.iloc[i].get('close', df_k.iloc[i].get('last_price')), errors='coerce')
                         d_pre_close = pd.to_numeric(df_k.iloc[i-1].get('close', df_k.iloc[i-1].get('last_price')), errors='coerce')
@@ -430,9 +424,7 @@ def calculate_real_vol_ratio(candidate_df):
                         
                         if d_pre_close > 0:
                             d_pct = (d_close - d_pre_close) / d_pre_close * 100
-                            # 如果是大阴线 (跌幅>5%) 且 放量 (成交量 > 5日均量的1.5倍)
                             if d_pct <= -5.0 and d_vol > past_5d_avg_vol * 1.5:
-                                # 如果今天的最高价还没突破那根大阴线的最高价，说明套牢盘还在头顶
                                 if today_high < d_high * 0.98:
                                     chip_gap_found = True
                                     chip_gap_price = d_high
@@ -441,7 +433,7 @@ def calculate_real_vol_ratio(candidate_df):
                         continue
                 
                 if chip_gap_found:
-                    vol_ratio = 99.0  # 发现筹码断层，直接淘汰！
+                    vol_ratio = 99.0
                     chip_gap_warnings.append(f"⚠️ {row['name']} 上方存在筹码断层 (大阴线高点 {chip_gap_price:.2f})，已强制过滤。")
                 else:
                     chip_gap_warnings.append(f"✅ {row['name']} 上方筹码干净，无套牢盘压力。 (量比:{vol_ratio:.2f})")
@@ -458,7 +450,6 @@ def calculate_real_vol_ratio(candidate_df):
         
     candidate_df['vol_ratio'] = real_vol_ratios
     
-    # 🆕 将筹码断层的检测结果打印到 Streamlit 界面
     for warning in chip_gap_warnings:
         if warning.startswith("⚠️"):
             st.caption(warning)
@@ -495,12 +486,12 @@ def get_history_context(tf_client, tf_code):
         limit_ups_60d = (pct_changes > 9.5).sum()
         limit_downs_60d = (pct_changes < -9.5).sum()
         res = f"""
-【历史趋势快照 (过去60天)】
-- 当前坐标: 处于60日区间 {pos_desc} (位置分位: {position_pct:.0f}%)
-- 均线形态: {trend_desc} (MA5:{ma5:.2f} | MA20:{ma20:.2f} | MA60:{ma60:.2f})
-- 筹码边界: {pressure_desc} | {support_desc}
-- 量能对比: 今日成交量是20日均量的 {vol_mult:.1f} 倍
-- 股性基因: 60日内涨停 {limit_ups_60d} 次，跌停 {limit_downs_60d} 次
+【60日趋势快照】
+- 坐标: {pos_desc} (分位{position_pct:.0f}%)
+- 均线: {trend_desc} (MA5:{ma5:.2f}/MA20:{ma20:.2f}/MA60:{ma60:.2f})
+- 边界: 压力{high_60d:.2f} | 支撑{low_60d:.2f}
+- 量能: 今日是20日均量{vol_mult:.1f}倍
+- 股性: 60日内{limit_ups_60d}涨停/{limit_downs_60d}跌停
 """
         return res
     except Exception as e:
@@ -597,13 +588,19 @@ def analyze_with_llm(stock_dict, minute_feature_text, market_context, history_co
 ⚠️ 【交易计划】：我将于【明日（T+1日）】进行买入操作。请基于上述T日收盘数据，为我制定明日的集合竞价观察点及盘中条件买入策略。"""
     
     try:
+        # 🔧 FIX-1: 删除 stream=True（Stream 对象无 .choices 属性，必崩）
+        # 🔧 FIX-5: timeout 已在客户端初始化时提升至 180s，无需流式规避超时
         response = llm_client.chat.completions.create(
             model=CONFIG["LLM_MODEL"],
-            messages=[{"role": "system", "content": system_p}, {"role": "user", "content": user_prompt}],
-            max_tokens=8192
+            messages=[
+                {"role": "system", "content": system_p},
+                {"role": "user", "content": user_prompt}
+            ],
+            max_tokens=32768
         )
-        reasoning = getattr(response.choices[0].message, 'reasoning_content', '')
-        final = response.choices[0].message.content
+        # 🔧 FIX-2: 加 or '' 兜底，防止 reasoning_content 为 None 时切片崩溃
+        reasoning = getattr(response.choices[0].message, 'reasoning_content', '') or ''
+        final = response.choices[0].message.content or ''
         return reasoning, final
     except Exception as e:
         return str(e), f"❌ AI 调用失败: {e}"
@@ -623,20 +620,15 @@ def get_minute_features(tf_client, tf_codes):
             df_k['amount'] = pd.to_numeric(df_k.get('amount', 0), errors='coerce')
             
             total_vol = df_k['volume'].sum()
-            tail_vol = df_k['volume'].tail(2).sum()  # 尾盘30分钟 (2根15m K线)
+            tail_vol = df_k['volume'].tail(2).sum()
             tail_ratio = (tail_vol / total_vol * 100) if total_vol > 0 else 0
             
-            # 计算全天均价 (VWAP)
             total_amount = df_k['amount'].sum()
             avg_price_all_day = (total_amount / total_vol) if total_vol > 0 and total_amount > 0 else df_k['close'].mean()
             
-            # 获取尾盘最后的价格
             last_price = df_k['close'].iloc[-1]
-            
-            # 🆕 V26.0 新增：计算尾盘均价 (最后2根K线的均价)
             tail_avg_price = df_k['close'].tail(2).mean()
             
-            # 🆕 V26.0 综合判断体系
             logic_text = ""
             if tail_ratio > 20 and last_price > avg_price_all_day and tail_avg_price > avg_price_all_day:
                 logic_text = " 🔥【尾盘主力抢筹+站稳均价线】(尾盘放量且价格高于全天均价，主力真金白银买入，次日溢价预期极高！)"
@@ -781,7 +773,9 @@ def save_today_predictions(normal_res, demon_res, defense_res, safe_dates):
             
             buy_match = re.search(r'(?:买点|买入|竞价|目标).*?(\d{1,3}(?:\.\d{1,2})?)', final_text)
             stop_match = re.search(r'(?:止损|割肉|离场|跌破).*?(\d{1,3}(?:\.\d{1,2})?)', final_text)
-            rating_match = re.search(r'评级[：:\s]*([SABC])', final_text, re.IGNORECASE)
+            # 🔧 FIX-3: 删除危险的 \b([SABC])\b 兜底正则（会误匹配"A股""S级"等）
+            # 仅保留精确匹配评级格式的正则，未匹配则标记"未评级"
+            rating_match = re.search(r'(?:评级|综合评级|逆风评级)[：:\s]*\*{0,2}([SABC])\*{0,2}', final_text, re.IGNORECASE)
             
             buy_price = float(buy_match.group(1)) if buy_match else 0.0
             stop_price = float(stop_match.group(1)) if stop_match else 0.0
@@ -853,10 +847,16 @@ def run_autopsy(safe_dates):
                 t1_low = real['low']
                 t1_close = real['close']
                 
-                ai_buy = float(row.get('AI建议买点', 0))
-                ai_stop = float(row.get('AI建议止损', 0))
+                # 🔧 FIX-7: 安全 float 转换，防止 Google Sheets 空值/文本导致 ValueError
+                try:
+                    ai_buy = float(row.get('AI建议买点', 0) or 0)
+                except (ValueError, TypeError):
+                    ai_buy = 0.0
+                try:
+                    ai_stop = float(row.get('AI建议止损', 0) or 0)
+                except (ValueError, TypeError):
+                    ai_stop = 0.0
                 
-                # 🆕 V26.0 获取 T+1 日的涨幅和量比
                 t1_pct_chg = real.get('pct_chg', 0)
                 t1_vol_ratio = real.get('vol_ratio', 1.0) 
                 
@@ -865,7 +865,6 @@ def run_autopsy(safe_dates):
                     if t1_low <= ai_stop:
                         result = f"❌ 爆头止损 (最低{t1_low:.2f}破止损{ai_stop:.2f})"
                     elif t1_high >= ai_buy * 1.05:
-                        # 🆕 V26.0 细分大肉止盈，如果是放量大涨，标记为"完美反包"
                         if t1_pct_chg >= 5.0 and t1_vol_ratio >= 1.5:
                             result = f"🏆🏆 完美缩量反包 (T+1涨{t1_pct_chg:.1f}%且放量{t1_vol_ratio:.1f}倍，策略完美验证！最高{t1_high:.2f})"
                         else:
@@ -928,9 +927,10 @@ def generate_prompt_evolution(failed_cases_text, current_prompt_desc):
                 {"role": "system", "content": mentor_system_prompt},
                 {"role": "user", "content": user_prompt}
             ],
-            max_tokens=3000
+            # 🔧 FIX-6: max_tokens 从 3000 提升至 8192，防止导师 AI 输出被截断
+            max_tokens=8192
         )
-        full_response = response.choices[0].message.content
+        full_response = response.choices[0].message.content or ''
         
         report = full_response
         new_patch = ""
@@ -951,7 +951,7 @@ def generate_prompt_evolution(failed_cases_text, current_prompt_desc):
         return f"❌ 导师 AI 调用失败: {e}", None
 
 # ================= 8. Streamlit Web 主界面 =================
-st.set_page_config(page_title="V26.0 四轨猎魔策略 (AI进化版)", layout="wide")
+# 🔧 FIX-4: st.set_page_config 已移至文件最顶部，此处不再重复调用
 st.title("👑 四轨制猎手 V26.0 (AI 自我进化版)")
 
 safe_dates = get_safe_trade_dates()
@@ -1303,13 +1303,13 @@ if run_market_scan or run_watchlist:
 st.divider()
 if st.session_state.get("html_report_data"):
     st.subheader("📥 下载报告")
+    # 🔧 FIX-7: 删除 type="primary"（st.download_button 不支持该参数，会 TypeError）
     st.download_button(
         label=f"💾 点击下载: {st.session_state.html_report_filename}",
         data=st.session_state.html_report_data,
         file_name=st.session_state.html_report_filename,
         mime="text/html",
-        use_container_width=True,
-        type="primary"
+        use_container_width=True
     )
 else:
     st.caption("💡 提示：运行全市场扫描或自选股诊断后，这里会出现 HTML 报告下载按钮。")
