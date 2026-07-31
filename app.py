@@ -869,7 +869,7 @@ def extract_rating_from_text(final_text):
 
 
 def save_today_predictions(normal_res, demon_res, defense_res, safe_dates):
-    """V27.0 使用智能价格提取器"""
+    """V27.1 修复版：增加调试输出 + value_input_option + 健壮类型转换"""
     if not gc or not spreadsheet_url:
         st.warning("⚠️ 无法保存：Google Sheets 未连接或未配置 SPREADSHEET_URL。")
         return
@@ -877,6 +877,11 @@ def save_today_predictions(normal_res, demon_res, defense_res, safe_dates):
     try:
         sh = gc.open_by_url(spreadsheet_url)
         worksheet = sh.worksheet(SHEET_NAME)
+
+        # 🔧 新增：读取表头，确认列顺序，帮助排查错位
+        header = worksheet.row_values(1)
+        st.info(f"📋 Google Sheets 表头列顺序: {header}")
+
         existing_data = worksheet.get_all_values()
 
         if len(existing_data) > 1:
@@ -898,23 +903,32 @@ def save_today_predictions(normal_res, demon_res, defense_res, safe_dates):
             stop_price = extract_price_from_text(final_text, close_price, "stop")
             rating = extract_rating_from_text(final_text)
 
+            # 🔧 调试输出：让你看到提取出的值是否正确
+            st.info(f"🔍 {row['code']} {row['name']} → "
+                    f"收盘={close_price:.2f}, 买点={buy_price:.2f}, "
+                    f"止损={stop_price:.2f}, 评级={rating}")
+
+            # 写入顺序必须和表头完全一致，请对照上面的表头输出确认
             all_results.append([
-                safe_dates['today'],
-                row['name'],
-                row['code'],
-                track_name,
-                round(close_price, 2),
-                round(buy_price, 2),
-                round(stop_price, 2),
-                rating,
-                final_text,
-                None, None, None,
-                "待验尸"
+                safe_dates['today'],           # 日期
+                row['name'],                   # 名称
+                row['code'],                   # 代码
+                track_name,                    # 策略赛道
+                round(close_price, 2),         # 收盘价
+                round(buy_price, 2),           # AI建议买点
+                round(stop_price, 2),          # AI建议止损
+                rating,                        # 猎手评级
+                final_text,                    # AI分析全文
+                None,                          # T+1日最高
+                None,                          # T+1日最低
+                None,                          # T+1日收盘
+                "待验尸"                       # 验尸结果
             ])
 
     if all_results:
         try:
-            worksheet.append_rows(all_results)
+            # 🔧 关键修复：添加 USER_ENTERED 确保数字以数字格式写入
+            worksheet.append_rows(all_results, value_input_option='USER_ENTERED')
             st.success(f"✅ 已将今日 {len(all_results)} 条 AI 策略存入云端！")
         except Exception as e:
             st.error(f"❌ 存入 Google Sheets 失败: {e}")
@@ -922,21 +936,25 @@ def save_today_predictions(normal_res, demon_res, defense_res, safe_dates):
         st.warning("⚠️ 今日没有生成任何有效结果，跳过保存。")
 
 def run_autopsy(safe_dates):
-    """使用 gspread 读取历史记录并进行事后验尸 (V27.1 修复版)"""
-    if not gc or not spreadsheet_url: return
+    """V27.2 修复版：完整调试输出 + 健壮值解析"""
+    if not gc or not spreadsheet_url:
+        return
 
     try:
         sh = gc.open_by_url(spreadsheet_url)
         worksheet = sh.worksheet(SHEET_NAME)
         df_history = pd.DataFrame(worksheet.get_all_records())
 
-        if df_history.empty: return
-        if '验尸结果' not in df_history.columns: return
+        if df_history.empty:
+            return
+        if '验尸结果' not in df_history.columns:
+            return
 
         pending_rows = df_history[df_history['验尸结果'] == '待验尸'].copy()
-        if pending_rows.empty: return
+        if pending_rows.empty:
+            return
 
-        # 🔧 FIX-1: 只验尸"日期早于今天"的记录（今天的记录还没到T+1日，不应验尸）
+        # 🔧 FIX-1: 只验尸"日期早于今天"的记录
         if '日期' in pending_rows.columns:
             today_str = safe_dates['today']
             pending_rows = pending_rows[pending_rows['日期'].astype(str) < today_str]
@@ -945,6 +963,15 @@ def run_autopsy(safe_dates):
                 return
 
         st.info(f"🔍 检测到 {len(pending_rows)} 条历史 AI 策略，正在进行事后验尸...")
+
+        # 🔧 调试：显示待验尸记录中的关键列原始值
+        for _, prow in pending_rows.iterrows():
+            raw_buy = prow.get('AI建议买点', None)
+            raw_stop = prow.get('AI建议止损', None)
+            st.info(f"📋 待验尸: {prow.get('代码','?')} {prow.get('名称','?')} "
+                    f"| 日期={prow.get('日期','?')} "
+                    f"| AI建议买点原始值={repr(raw_buy)} "
+                    f"| AI建议止损原始值={repr(raw_stop)}")
 
         symbols_to_check = pending_rows['代码'].unique().tolist()
 
@@ -985,14 +1012,32 @@ def run_autopsy(safe_dates):
                 t1_low = real['low']
                 t1_close = real['close']
 
+                # 🔧 核心修复：健壮的值解析，处理 None / 空字符串 / 文本
+                raw_buy = row.get('AI建议买点', None)
+                raw_stop = row.get('AI建议止损', None)
+
+                ai_buy = 0.0
+                ai_stop = 0.0
+
                 try:
-                    ai_buy = float(row.get('AI建议买点', 0) or 0)
+                    val = raw_buy if raw_buy is not None else ''
+                    if str(val).strip() and str(val).strip() not in ('0', 'nan', 'None'):
+                        ai_buy = float(val)
                 except (ValueError, TypeError):
                     ai_buy = 0.0
+
                 try:
-                    ai_stop = float(row.get('AI建议止损', 0) or 0)
+                    val = raw_stop if raw_stop is not None else ''
+                    if str(val).strip() and str(val).strip() not in ('0', 'nan', 'None'):
+                        ai_stop = float(val)
                 except (ValueError, TypeError):
                     ai_stop = 0.0
+
+                # 🔧 调试：显示解析后的值
+                if ai_buy <= 0 or ai_stop <= 0:
+                    st.warning(f"⚠️ {code} {row.get('名称','')} → "
+                               f"买点解析后={ai_buy}, 止损解析后={ai_stop} "
+                               f"| 原始买点={repr(raw_buy)}, 原始止损={repr(raw_stop)}")
 
                 t1_pct_chg = real.get('pct_chg', 0)
                 t1_vol_ratio = real.get('vol_ratio', 1.0)
@@ -1017,13 +1062,12 @@ def run_autopsy(safe_dates):
                 worksheet.update_cell(sheet_row, col_close, round(t1_close, 2))
                 worksheet.update_cell(sheet_row, col_result, result)
                 update_count += 1
-                time.sleep(0.1)  # 避免API频率限制
+                time.sleep(0.1)
             else:
                 skip_count += 1
 
-        # 🔧 FIX-4: 增加完整的反馈信息
+        # 🔧 FIX-4: 完整反馈信息
         if update_count > 0:
-            # 重新读取最新数据计算胜率
             df_latest = pd.DataFrame(worksheet.get_all_records())
             completed = df_latest[df_latest['验尸结果'] != '待验尸']
             win_count = len(completed[completed['验尸结果'].str.contains('大肉|浮盈|完美', na=False)])
