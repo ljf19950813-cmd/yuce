@@ -922,49 +922,69 @@ def save_today_predictions(normal_res, demon_res, defense_res, safe_dates):
         st.warning("⚠️ 今日没有生成任何有效结果，跳过保存。")
 
 def run_autopsy(safe_dates):
-    """使用 gspread 读取历史记录并进行事后验尸 (V26.0 完美反包版)"""
+    """使用 gspread 读取历史记录并进行事后验尸 (V27.1 修复版)"""
     if not gc or not spreadsheet_url: return
-    
+
     try:
         sh = gc.open_by_url(spreadsheet_url)
         worksheet = sh.worksheet(SHEET_NAME)
         df_history = pd.DataFrame(worksheet.get_all_records())
-        
+
         if df_history.empty: return
         if '验尸结果' not in df_history.columns: return
-        
+
         pending_rows = df_history[df_history['验尸结果'] == '待验尸'].copy()
         if pending_rows.empty: return
-        
+
+        # 🔧 FIX-1: 只验尸"日期早于今天"的记录（今天的记录还没到T+1日，不应验尸）
+        if '日期' in pending_rows.columns:
+            today_str = safe_dates['today']
+            pending_rows = pending_rows[pending_rows['日期'].astype(str) < today_str]
+            if pending_rows.empty:
+                st.info("💡 所有待验尸记录均为今日生成，需等到下一个交易日才能验证，暂跳过验尸。")
+                return
+
         st.info(f"🔍 检测到 {len(pending_rows)} 条历史 AI 策略，正在进行事后验尸...")
-        
+
         symbols_to_check = pending_rows['代码'].unique().tolist()
+
+        # 🔧 FIX-2: 检查 TickFlow 客户端是否可用
+        if not tf:
+            st.warning("⚠️ TickFlow 客户端未初始化，无法获取T+1日实际数据，验尸跳过。")
+            return
+
         today_real_data = get_tickflow_data_for_symbols(tf, symbols_to_check)
-        
+
+        # 🔧 FIX-3: 检查是否成功获取到数据
+        if today_real_data.empty:
+            st.warning(f"⚠️ 无法获取 {len(symbols_to_check)} 只股票的T+1日行情数据（可能API异常或非交易日），验尸跳过。")
+            return
+
         updated_rows = worksheet.get_all_values()
         header = updated_rows[0]
-        
+
         try:
             col_high = header.index('T+1日最高') + 1
             col_low = header.index('T+1日最低') + 1
             col_close = header.index('T+1日收盘') + 1
             col_result = header.index('验尸结果') + 1
         except ValueError:
-            st.warning("⚠️ 表格表头缺失，请确保第一行包含完整表头。")
+            st.warning("⚠️ 表格表头缺失，请确保第一行包含完整表头（T+1日最高/T+1日最低/T+1日收盘/验尸结果）。")
             return
-            
+
         update_count = 0
+        skip_count = 0
+
         for idx, row in pending_rows.iterrows():
-            code = row['代码']
-            real_row = today_real_data[today_real_data['code'] == code]
-            
+            code = str(row['代码']).strip()
+            real_row = today_real_data[today_real_data['code'].astype(str).str.strip() == code]
+
             if not real_row.empty:
                 real = real_row.iloc[0]
                 t1_high = real['high']
                 t1_low = real['low']
                 t1_close = real['close']
-                
-                # 🔧 FIX-7: 安全 float 转换，防止 Google Sheets 空值/文本导致 ValueError
+
                 try:
                     ai_buy = float(row.get('AI建议买点', 0) or 0)
                 except (ValueError, TypeError):
@@ -973,10 +993,10 @@ def run_autopsy(safe_dates):
                     ai_stop = float(row.get('AI建议止损', 0) or 0)
                 except (ValueError, TypeError):
                     ai_stop = 0.0
-                
+
                 t1_pct_chg = real.get('pct_chg', 0)
-                t1_vol_ratio = real.get('vol_ratio', 1.0) 
-                
+                t1_vol_ratio = real.get('vol_ratio', 1.0)
+
                 result = "数据不足"
                 if ai_buy > 0 and ai_stop > 0:
                     if t1_low <= ai_stop:
@@ -990,21 +1010,34 @@ def run_autopsy(safe_dates):
                         result = f"✅ 浮盈收盘 (收{t1_close:.2f})"
                     else:
                         result = f"⚠️ 阴跌套牢 (收{t1_close:.2f})"
-                
-                sheet_row = idx + 2 
+
+                sheet_row = idx + 2
                 worksheet.update_cell(sheet_row, col_high, round(t1_high, 2))
                 worksheet.update_cell(sheet_row, col_low, round(t1_low, 2))
                 worksheet.update_cell(sheet_row, col_close, round(t1_close, 2))
                 worksheet.update_cell(sheet_row, col_result, result)
                 update_count += 1
-                
+                time.sleep(0.1)  # 避免API频率限制
+            else:
+                skip_count += 1
+
+        # 🔧 FIX-4: 增加完整的反馈信息
         if update_count > 0:
-            completed = df_history[df_history['验尸结果'] != '待验尸']
-            win_rate = len(completed[completed['验尸结果'].str.contains('大肉|浮盈|完美', na=False)]) / max(len(completed), 1) * 100
-            st.success(f"💀 验尸完毕！更新了 {update_count} 条记录。AI 历史总胜率: **{win_rate:.1f}%**")
-            
+            # 重新读取最新数据计算胜率
+            df_latest = pd.DataFrame(worksheet.get_all_records())
+            completed = df_latest[df_latest['验尸结果'] != '待验尸']
+            win_count = len(completed[completed['验尸结果'].str.contains('大肉|浮盈|完美', na=False)])
+            win_rate = win_count / max(len(completed), 1) * 100
+            st.success(f"💀 验尸完毕！更新了 {update_count} 条记录。AI 历史总胜率: **{win_rate:.1f}%** ({win_count}/{len(completed)})")
+            if skip_count > 0:
+                st.warning(f"⚠️ 另有 {skip_count} 条记录因未获取到T+1日行情数据而跳过。")
+        else:
+            st.warning(f"⚠️ 验尸未更新任何记录。共 {len(pending_rows)} 条待验尸，其中 {skip_count} 条未匹配到行情数据。请检查股票代码格式或API连接。")
+
     except Exception as e:
         st.warning(f"验尸过程出现异常 (不影响今日复盘): {e}")
+        import traceback
+        logging.error(f"验尸异常详情: {traceback.format_exc()}")
 
 # ================= 🆕 导师 AI 进化引擎 =================
 def generate_prompt_evolution(failed_cases_text, current_prompt_desc):
