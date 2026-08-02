@@ -855,7 +855,7 @@ def tail_sniper_scan():
         realtime = realtime[main_cond | gem_cond]
         realtime = realtime[realtime['amount'] > 1e8]
 
-        # 🚀 只保留成交额最大的前 50 只，避免全市场遍历
+        # 只保留成交额最大的前 50 只
         realtime = realtime.sort_values('amount', ascending=False).head(50)
         st.write(f"初步筛选后剩余 {len(realtime)} 只，将逐一扫描")
     except Exception as e:
@@ -866,16 +866,20 @@ def tail_sniper_scan():
         st.info("无满足涨幅和成交额条件的股票")
         return pd.DataFrame()
 
-    # 2. 逐一检查量比、均价、盘口
+    # 2. 逐一检查
     candidates = []
     total = len(realtime)
     progress_bar = st.progress(0)
 
+    # 🧪 调试计数器
+    count_15m_pass = 0
+    count_vwap_pass = 0
+    count_depth_pass = 0
+
     for idx, (_, row) in enumerate(realtime.iterrows()):
         symbol = row['symbol']
 
-        # 打印当前处理的股票，方便观察
-        if idx % 10 == 0:   # 每10只输出一次，避免刷屏
+        if idx % 10 == 0:
             st.write(f"正在检查 {symbol} ({idx+1}/{total})")
 
         # 15分钟量比
@@ -891,6 +895,8 @@ def tail_sniper_scan():
         except:
             continue
 
+        count_15m_pass += 1  # 通过量比
+
         # 分时均价线
         try:
             df_1m = tf.klines.get(symbol, period='1m', count=240, as_dataframe=True)
@@ -901,6 +907,8 @@ def tail_sniper_scan():
                 continue
         except:
             continue
+
+        count_vwap_pass += 1  # 通过均价线
 
         # 五档盘口
         try:
@@ -914,7 +922,8 @@ def tail_sniper_scan():
         except:
             continue
 
-        # 全部通过，加入候选
+        count_depth_pass += 1  # 通过五档
+
         candidates.append({
             'symbol': symbol,
             'name': row.get('ext.name', row.get('name', '')),
@@ -924,13 +933,16 @@ def tail_sniper_scan():
             'bid_vol': bid_vol,
             'ask_vol': ask_vol
         })
-        time.sleep(0.05)   # 轻微延迟避免限流
+        time.sleep(0.05)
 
-        # 更新进度条
         progress_bar.progress((idx + 1) / total)
 
     progress_bar.empty()
-    st.write(f"扫描完成，发现 {len(candidates)} 只尾盘狙击目标")
+
+    # 🧪 打印通过各阶段的股票数量
+    st.write(f"量比通过: {count_15m_pass}，均价线通过: {count_vwap_pass}，五档通过: {count_depth_pass}")
+
+    st.write(f"扫描完成，最终发现 {len(candidates)} 只尾盘狙击目标")
     return pd.DataFrame(candidates)
 # ================= 14. Streamlit 主界面 =================
 st.title("👑 四轨制猎手 V27.5 (精简版)")
