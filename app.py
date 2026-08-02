@@ -950,6 +950,27 @@ def tail_sniper_scan():
 
     st.write(f"扫描完成，最终发现 {len(candidates)} 只尾盘狙击目标")
     return pd.DataFrame(candidates)
+
+def analyze_tail_snipe(stock_dict):
+    """用 AI 快速给出尾盘狙击的操作建议"""
+    if not llm_client:
+        return "无 AI，自行判断"
+    prompt = f"""尾盘狙击目标：
+{stock_dict['name']} ({stock_dict['symbol']})
+现价：{stock_dict['price']} 元，涨幅：{stock_dict['pct_chg']}%
+尾盘放量比：{stock_dict['vol_ratio']:.2f}
+买盘总量：{stock_dict['bid_vol']}手，卖盘总量：{stock_dict['ask_vol']}手
+请立即给出操作建议（买入/观望/卖出），目标价和止损价（精确到分），50字内。"""
+    try:
+        resp = llm_client.chat.completions.create(
+            model=CONFIG["LLM_MODEL"],
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=200
+        )
+        return resp.choices[0].message.content
+    except:
+        return "AI 调用失败"
+        
 # ================= 14. Streamlit 主界面 =================
 st.title("👑 四轨制猎手 V27.5 (精简版)")
 safe_dates = get_safe_trade_dates()
