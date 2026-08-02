@@ -887,31 +887,31 @@ def save_today_predictions(normal_res, demon_res, defense_res, safe_dates):
     all_results = []
     for res_list, track_name in [(normal_res, "缩量潜伏"), (demon_res, "主板妖股"), (defense_res, "逆风突破")]:
         for item in res_list:
-    row = item['row']
-    final_text = item['final']
-    close_price = float(row['close'])
-    buy_price = extract_price_from_text(final_text, close_price, "buy")
-    stop_price = extract_price_from_text(final_text, close_price, "stop")
-    rating = extract_rating_from_text(final_text)
+            row = item['row']
+            final_text = item['final']
+            close_price = float(row['close'])
+            buy_price = extract_price_from_text(final_text, close_price, "buy")
+            stop_price = extract_price_from_text(final_text, close_price, "stop")
+            rating = extract_rating_from_text(final_text)
 
-    # 🆕 生成竞价条件字符串
-    conditions = generate_auction_checklist(row, final_text)
-    conditions_str = " | ".join(conditions['conditions'])
+            # 🆕 生成竞价条件字符串
+            conditions = generate_auction_checklist(row, final_text)
+            conditions_str = " | ".join(conditions['conditions'])
 
-    all_results.append([
-        safe_dates['today'],
-        row['name'],
-        row['code'],
-        track_name,
-        round(close_price, 2),
-        round(buy_price, 2),
-        round(stop_price, 2),
-        rating,
-        final_text,
-        None, None, None,
-        conditions_str,   # 现在这个变量已经定义了
-        "待验尸"
-    ])
+            all_results.append([
+                safe_dates['today'],
+                row['name'],
+                row['code'],
+                track_name,
+                round(close_price, 2),
+                round(buy_price, 2),
+                round(stop_price, 2),
+                rating,
+                final_text,
+                None, None, None,
+                conditions_str,   # 新增：竞价条件
+                "待验尸"
+            ])
     if all_results:
         try:
             worksheet.append_rows(all_results, value_input_option='USER_ENTERED')
