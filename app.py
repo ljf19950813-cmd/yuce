@@ -897,20 +897,14 @@ def tail_sniper_scan():
 
         count_15m_pass += 1  # 通过量比
 
-        # 分时均价线（临时放宽条件，仅过滤均价无效的数据）
+        # 分时均价线（实盘严格版）
         try:
             df_1m = tf.klines.get(symbol, period='1m', count=240, as_dataframe=True)
             if df_1m is None or len(df_1m) < 10:
                 continue
-            total_vol = df_1m['volume'].sum()
-            if total_vol == 0:
+            avg_price = df_1m['amount'].sum() / df_1m['volume'].sum() if df_1m['volume'].sum() > 0 else 0
+            if avg_price <= 0 or row['last_price'] < avg_price:
                 continue
-            avg_price = df_1m['amount'].sum() / total_vol
-            # 🧪 放宽条件：只要均价线有效即可，不强制价格高于均价
-            if avg_price <= 0:
-                continue
-            # 但仍记录一下价格与均价的关系，供参考
-            below_avg = row['last_price'] < avg_price
         except:
             continue
 
@@ -946,30 +940,33 @@ def tail_sniper_scan():
     progress_bar.empty()
 
     # 🧪 打印通过各阶段的股票数量
-    st.write(f"量比通过: {count_15m_pass}，均价线通过: {count_vwap_pass}，五档通过: {count_depth_pass}")
 
     st.write(f"扫描完成，最终发现 {len(candidates)} 只尾盘狙击目标")
     return pd.DataFrame(candidates)
 
 def analyze_tail_snipe(stock_dict):
-    """用 AI 快速给出尾盘狙击的操作建议"""
     if not llm_client:
-        return "无 AI，自行判断"
+        return "无 AI 客户端"
     prompt = f"""尾盘狙击目标：
 {stock_dict['name']} ({stock_dict['symbol']})
 现价：{stock_dict['price']} 元，涨幅：{stock_dict['pct_chg']}%
 尾盘放量比：{stock_dict['vol_ratio']:.2f}
 买盘总量：{stock_dict['bid_vol']}手，卖盘总量：{stock_dict['ask_vol']}手
 请立即给出操作建议（买入/观望/卖出），目标价和止损价（精确到分），50字内。"""
-    try:
-        resp = llm_client.chat.completions.create(
-            model=CONFIG["LLM_MODEL"],
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=200
-        )
-        return resp.choices[0].message.content
-    except:
-        return "AI 调用失败"
+    for attempt in range(2):   # 尝试两次
+        try:
+            resp = llm_client.chat.completions.create(
+                model=CONFIG["LLM_MODEL"],
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=200,
+                timeout=15   # 设置超时避免长时间等待
+            )
+            content = resp.choices[0].message.content
+            if content and content.strip():
+                return content.strip()
+        except:
+            time.sleep(1)   # 等1秒再重试
+    return "AI 暂时无建议，请人工判断"
         
 # ================= 14. Streamlit 主界面 =================
 st.title("👑 四轨制猎手 V27.5 (精简版)")
@@ -991,7 +988,7 @@ with st.sidebar:
     st.divider()
     st.header("🔥 尾盘狙击 (14:45)")
     now = datetime.now(tz_shanghai)
-    if True:
+    if 1430 <= int(now.strftime('%H%M')) <= 1500:
         st.warning("🎯 尾盘狙击模式可用")
         run_tail = st.button("🎯 运行尾盘狙击", type="primary", use_container_width=True)
     else:
