@@ -58,8 +58,8 @@ LLM_API_KEY = st.secrets.get("LLM_API_KEY", "")
 
 CONFIG = {
     "TOP_N_NORMAL": 5,
-    "TOP_N_DEMON": 3,
-    "TOP_N_DEFENSE": 3,
+    "TOP_N_DEMON": 5,
+    "TOP_N_DEFENSE": 5,
     "TF_API_KEY": TF_API_KEY,
     "LLM_API_KEY": LLM_API_KEY,
     "LLM_BASE_URL": "https://api.deepseek.com/v1",
@@ -1159,7 +1159,7 @@ if run_market_scan or run_watchlist:
         demon_df = filter_demon_stocks(df)
         demon_df = financial_blacklist_filter(demon_df)  # 仅财务底线排雷
         if not demon_df.empty:
-            demon_df = calculate_real_vol_ratio(demon_df)  # 不设量比上限，仅用于检测筹码断层
+            demon_df = calculate_real_vol_ratio(demon_df).head(CONFIG['TOP_N_DEMON']) 
     # 这里不再根据量比过滤，但筹码断层会体现在vol_ratio=99上，妖股可以忽略99，也可保留为提醒
         defense_df = pd.DataFrame()
         if market_ratio < 1.0 or market_avg_pct < 0.0:
