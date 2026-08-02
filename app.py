@@ -822,62 +822,87 @@ def clean_display_text(t): return t
 def tail_sniper_scan():
     if not tf: return pd.DataFrame()
     st.info("🎯 尾盘扫描...")
+
+    # 1. 获取实时行情，快速过滤
     try:
         realtime = tf.quotes.get(universes=["CN_Equity_A"], as_dataframe=True)
-        if realtime is None or realtime.empty: return pd.DataFrame()
-        
-        # 使用正确的涨幅列名
-        realtime['pct_chg'] = realtime['ext.change_pct'].copy()
-        if realtime['pct_chg'].abs().max() < 1:
-            realtime['pct_chg'] = realtime['pct_chg'] * 100
-        
-        # 创建 board 列（如果不存在）
+        if realtime is None or realtime.empty:
+            st.warning("未获取到实时行情")
+            return pd.DataFrame()
+
+        # 创建涨幅列（兼容字段名）
+        if 'ext.change_pct' in realtime.columns:
+            realtime['pct_chg'] = realtime['ext.change_pct'].copy()
+            if realtime['pct_chg'].abs().max() < 1:
+                realtime['pct_chg'] = realtime['pct_chg'] * 100
+        else:
+            st.error("缺少涨幅字段")
+            return pd.DataFrame()
+
+        # 创建 board 列
         if 'board' not in realtime.columns:
             realtime['board'] = realtime['symbol'].apply(
                 lambda x: 'Main' if x.split('.')[0].startswith(('60','00')) 
                 else ('GEM' if x.split('.')[0].startswith(('30','68')) else 'Other')
             )
-        
-        # 过滤 ST
+
+        # 排除 ST
         realtime = realtime[~realtime['symbol'].str.contains('ST|退', na=False)]
-        
-        # 涨幅过滤
+
+        # 涨幅条件
         main_cond = (realtime['board']=='Main') & (realtime['pct_chg']>=2) & (realtime['pct_chg']<=7.5)
-        gem_cond = (realtime['board']=='GEM') & (realtime['pct_chg']>=2) & (realtime['pct_chg']<=15)
+        gem_cond  = (realtime['board']=='GEM') & (realtime['pct_chg']>=2) & (realtime['pct_chg']<=15)
         realtime = realtime[main_cond | gem_cond]
         realtime = realtime[realtime['amount'] > 1e8]
+
+        # 🚀 只保留成交额最大的前 50 只，避免全市场遍历
+        realtime = realtime.sort_values('amount', ascending=False).head(50)
+        st.write(f"初步筛选后剩余 {len(realtime)} 只，将逐一扫描")
     except Exception as e:
         st.error(f"实时行情过滤失败: {e}")
         return pd.DataFrame()
 
     if realtime.empty:
+        st.info("无满足涨幅和成交额条件的股票")
         return pd.DataFrame()
 
+    # 2. 逐一检查量比、均价、盘口
     candidates = []
-    for _, row in realtime.iterrows():
+    total = len(realtime)
+    progress_bar = st.progress(0)
+
+    for idx, (_, row) in enumerate(realtime.iterrows()):
         symbol = row['symbol']
 
-        # 15分钟量比检查
+        # 打印当前处理的股票，方便观察
+        if idx % 10 == 0:   # 每10只输出一次，避免刷屏
+            st.write(f"正在检查 {symbol} ({idx+1}/{total})")
+
+        # 15分钟量比
         try:
             df_15m = tf.klines.get(symbol, period='15m', count=16, as_dataframe=True)
-            if df_15m is None or len(df_15m)<2: continue
+            if df_15m is None or len(df_15m) < 2:
+                continue
             vol_last = df_15m.iloc[-1]['volume']
             vol_prev = df_15m.iloc[-2]['volume']
-            tail_vol_ratio = vol_last / vol_prev if vol_prev>0 else 0
-            if tail_vol_ratio < 1.5: continue
+            tail_vol_ratio = vol_last / vol_prev if vol_prev > 0 else 0
+            if tail_vol_ratio < 1.5:
+                continue
         except:
             continue
 
-        # 分时均价线检查
+        # 分时均价线
         try:
             df_1m = tf.klines.get(symbol, period='1m', count=240, as_dataframe=True)
-            if df_1m is None or len(df_1m)<10: continue
-            avg_price = df_1m['amount'].sum() / df_1m['volume'].sum() if df_1m['volume'].sum()>0 else 0
-            if avg_price <= 0 or row['last_price'] < avg_price: continue
+            if df_1m is None or len(df_1m) < 10:
+                continue
+            avg_price = df_1m['amount'].sum() / df_1m['volume'].sum() if df_1m['volume'].sum() > 0 else 0
+            if avg_price <= 0 or row['last_price'] < avg_price:
+                continue
         except:
             continue
 
-        # 五档盘口检查
+        # 五档盘口
         try:
             depth = tf.depth.get(symbol)
             if not depth or not isinstance(depth, dict):
@@ -889,6 +914,7 @@ def tail_sniper_scan():
         except:
             continue
 
+        # 全部通过，加入候选
         candidates.append({
             'symbol': symbol,
             'name': row.get('ext.name', row.get('name', '')),
@@ -898,8 +924,13 @@ def tail_sniper_scan():
             'bid_vol': bid_vol,
             'ask_vol': ask_vol
         })
-        time.sleep(0.1)
+        time.sleep(0.05)   # 轻微延迟避免限流
 
+        # 更新进度条
+        progress_bar.progress((idx + 1) / total)
+
+    progress_bar.empty()
+    st.write(f"扫描完成，发现 {len(candidates)} 只尾盘狙击目标")
     return pd.DataFrame(candidates)
 # ================= 14. Streamlit 主界面 =================
 st.title("👑 四轨制猎手 V27.5 (精简版)")
@@ -921,7 +952,7 @@ with st.sidebar:
     st.divider()
     st.header("🔥 尾盘狙击 (14:45)")
     now = datetime.now(tz_shanghai)
-    if 1430 <= int(now.strftime('%H%M')) <= 1500:
+    if True:
         st.warning("🎯 尾盘狙击模式可用")
         run_tail = st.button("🎯 运行尾盘狙击", type="primary", use_container_width=True)
     else:
