@@ -912,6 +912,47 @@ def tail_sniper_scan():
     return pd.DataFrame(candidates)
 # ================= 14. Streamlit 主界面 =================
 st.title("👑 四轨制猎手 V27.5 (精简版)")
+st.header("🧪 强制测试数据连接")
+
+if tf:
+    st.write("TickFlow 已初始化，类型:", type(tf).__name__)
+    try:
+        # 1. 实时行情
+        q = tf.quotes.get(symbols=["600519.SH"], as_dataframe=True)
+        if q is not None and not q.empty:
+            st.success(f"✅ 实时行情获取成功，共 {len(q)} 条")
+            st.dataframe(q[['symbol','last_price','pct_chg']].head(2))
+        else:
+            st.error("❌ 实时行情返回空")
+    except Exception as e:
+        st.error(f"❌ 实时行情失败: {e}")
+
+    try:
+        # 2. 15分钟K线
+        k = tf.klines.get("600519.SH", period="15m", count=5, as_dataframe=True)
+        if k is not None and not k.empty:
+            st.success("✅ 15分钟K线获取成功")
+            st.dataframe(k[['close','volume']].tail(2))
+        else:
+            st.error("❌ 15分钟K线返回空")
+    except Exception as e:
+        st.error(f"❌ 15分钟K线失败: {e}")
+
+    try:
+        # 3. 深度数据
+        d = tf.depth.get("600519.SH")
+        if d is None:
+            st.warning("⚠️ depth 返回 None")
+        else:
+            st.success(f"✅ depth 获取成功，类型: {type(d).__name__}")
+            if hasattr(d, 'bids'):
+                st.write("bids 示例:", list(d.bids)[:2] if d.bids else "空")
+            if hasattr(d, '__dict__'):
+                st.json(d.__dict__)
+    except Exception as e:
+        st.error(f"❌ 深度数据失败: {e}")
+else:
+    st.error("❌ TickFlow 未初始化，请检查 TF_API_KEY")
 safe_dates = get_safe_trade_dates()
 st.caption(f"📅 基准日: {safe_dates['today']} | 昨: {safe_dates['yesterday']}")
 run_autopsy(safe_dates)
