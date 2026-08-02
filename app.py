@@ -159,12 +159,10 @@ def get_safe_trade_dates():
 
 # ================= 财务数据与除权因子 =================
 def financial_blacklist_filter(df):
-    """
-    根据财务指标过滤问题股。需包含 'tf_code' 列。
-    使用 tf.financials.metrics 获取最新指标。
-    """
     if df is None or df.empty or not tf:
         return df
+    # 🆕 确保索引连续，避免 loc 对齐错误
+    df = df.reset_index(drop=True)
     try:
         symbols = df['tf_code'].unique().tolist()
         fin = tf.financials.metrics(symbols, latest=True, as_dataframe=True)
@@ -184,7 +182,8 @@ def financial_blacklist_filter(df):
         removed = merged[~mask]
         if not removed.empty:
             st.caption(f"🚮 财务排雷剔除 {len(removed)} 只: {removed['name'].tolist()}")
-        return df.loc[merged[mask].index]
+        # 现在 df 和 mask 的索引完全对齐，直接使用布尔索引
+        return df[mask]
     except Exception as e:
         st.warning(f"财务过滤异常: {e}")
         return df
