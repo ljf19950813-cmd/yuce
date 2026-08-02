@@ -897,14 +897,20 @@ def tail_sniper_scan():
 
         count_15m_pass += 1  # 通过量比
 
-        # 分时均价线
+        # 分时均价线（临时放宽条件，仅过滤均价无效的数据）
         try:
             df_1m = tf.klines.get(symbol, period='1m', count=240, as_dataframe=True)
             if df_1m is None or len(df_1m) < 10:
                 continue
-            avg_price = df_1m['amount'].sum() / df_1m['volume'].sum() if df_1m['volume'].sum() > 0 else 0
-            if avg_price <= 0 or row['last_price'] < avg_price:
+            total_vol = df_1m['volume'].sum()
+            if total_vol == 0:
                 continue
+            avg_price = df_1m['amount'].sum() / total_vol
+            # 🧪 放宽条件：只要均价线有效即可，不强制价格高于均价
+            if avg_price <= 0:
+                continue
+            # 但仍记录一下价格与均价的关系，供参考
+            below_avg = row['last_price'] < avg_price
         except:
             continue
 
