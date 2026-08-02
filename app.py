@@ -830,10 +830,15 @@ def tail_sniper_scan():
         gem_cond = (realtime['board']=='GEM') & (realtime['pct_chg']>=2) & (realtime['pct_chg']<=15)
         realtime = realtime[main_cond | gem_cond]
         realtime = realtime[realtime['amount'] > 1e8]
+        st.write(f"经过实时行情过滤后剩余: {len(realtime)} 只")
     except:
         return pd.DataFrame()
 
+    count_15m_pass = 0
+    count_avg_price_pass = 0
+    count_depth_pass = 0
     candidates = []
+
     for _, row in realtime.iterrows():
         symbol = row['symbol']
 
@@ -848,6 +853,8 @@ def tail_sniper_scan():
         except:
             continue
 
+        count_15m_pass += 1     # 通过量比检查
+
         # 分时均价线检查
         try:
             df_1m = tf.klines.get(symbol, period='1m', count=240, as_dataframe=True)
@@ -857,10 +864,12 @@ def tail_sniper_scan():
         except:
             continue
 
+        count_avg_price_pass += 1   # 通过均价线检查
+
         # 五档盘口检查（含调试输出）
         try:
             depth = tf.depth.get(symbol)
-            if not depth:          # 先判断 depth 是否存在
+            if not depth:
                 continue
 
             # 🧪 调试输出（测试完请删除以下三行）
@@ -868,18 +877,15 @@ def tail_sniper_scan():
             if hasattr(depth, '__dict__'):
                 st.write("depth 属性:", depth.__dict__)
 
-            # 尝试提取买卖盘总量
             bid_vol = 0
             ask_vol = 0
             if hasattr(depth, 'bids') and hasattr(depth, 'asks'):
                 bid_vol = sum(b[1] for b in depth.bids)
                 ask_vol = sum(a[1] for a in depth.asks)
             elif hasattr(depth, 'bid_volumes') and hasattr(depth, 'ask_volumes'):
-                # 有些接口可能叫不同的名字
                 bid_vol = sum(depth.bid_volumes)
                 ask_vol = sum(depth.ask_volumes)
             else:
-                # 若无法识别结构，输出错误并跳过该股
                 st.warning(f"⚠️ {symbol} depth 结构未知，跳过")
                 continue
 
@@ -888,6 +894,8 @@ def tail_sniper_scan():
         except Exception as e:
             st.warning(f"五档获取失败 {symbol}: {e}")
             continue
+
+        count_depth_pass += 1   # 通过五档检查
 
         candidates.append({
             'symbol': symbol,
@@ -900,8 +908,8 @@ def tail_sniper_scan():
         })
         time.sleep(0.1)
 
+    st.write(f"量比通过: {count_15m_pass}, 均价线通过: {count_avg_price_pass}, 五档通过: {count_depth_pass}")
     return pd.DataFrame(candidates)
-
 # ================= 14. Streamlit 主界面 =================
 st.title("👑 四轨制猎手 V27.5 (精简版)")
 safe_dates = get_safe_trade_dates()
