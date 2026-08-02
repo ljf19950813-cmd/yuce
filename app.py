@@ -921,8 +921,12 @@ with st.sidebar:
     st.divider()
     st.header("🔥 尾盘狙击 (14:45)")
     now = datetime.now(tz_shanghai)
-    # 🧪 强制测试（测试完记得改回）
-    run_tail = st.button("🎯 运行尾盘狙击（测试模式）", type="primary")
+    if 1430 <= int(now.strftime('%H%M')) <= 1500:
+        st.warning("🎯 尾盘狙击模式可用")
+        run_tail = st.button("🎯 运行尾盘狙击", type="primary", use_container_width=True)
+    else:
+        run_tail = False
+        st.caption("尾盘狙击仅在 14:30-15:00 可用")
     st.divider()
     run_market_scan = st.button("🚀 全市场四轨扫描", type="primary", use_container_width=True)
     run_watchlist = st.button("👁️ 自选股深度诊断", type="secondary", use_container_width=True)
