@@ -184,7 +184,7 @@ def financial_blacklist_filter(df):
         removed = merged[~mask]
         if not removed.empty:
             st.caption(f"🚮 财务排雷剔除 {len(removed)} 只: {removed['name'].tolist()}")
-        return df[mask]
+        return df.loc[merged[mask].index]
     except Exception as e:
         st.warning(f"财务过滤异常: {e}")
         return df
