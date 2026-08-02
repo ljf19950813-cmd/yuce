@@ -921,12 +921,13 @@ if tf:
         q = tf.quotes.get(symbols=["600519.SH"], as_dataframe=True)
         if q is not None and not q.empty:
             st.success(f"✅ 实时行情获取成功，共 {len(q)} 条")
+            st.write("实时行情列名:", q.columns.tolist())
             st.dataframe(q[['symbol','last_price','pct_chg']].head(2))
         else:
             st.error("❌ 实时行情返回空")
     except Exception as e:
         st.error(f"❌ 实时行情失败: {e}")
-
+        
     try:
         # 2. 15分钟K线
         k = tf.klines.get("600519.SH", period="15m", count=5, as_dataframe=True)
@@ -945,6 +946,7 @@ if tf:
             st.warning("⚠️ depth 返回 None")
         else:
             st.success(f"✅ depth 获取成功，类型: {type(d).__name__}")
+            st.json(d)
             if hasattr(d, 'bids'):
                 st.write("bids 示例:", list(d.bids)[:2] if d.bids else "空")
             if hasattr(d, '__dict__'):
