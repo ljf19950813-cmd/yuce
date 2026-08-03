@@ -1266,6 +1266,81 @@ safe_dates = get_safe_trade_dates()
 st.caption(f"📅 基准日: {safe_dates['today']} | 昨: {safe_dates['yesterday']}")
 run_autopsy(safe_dates)
 
+# ================= 持仓管理函数（必须放在主界面之前） =================
+def load_portfolio():
+    """从 Portfolio 工作表读取持有中的股票"""
+    if not gc or not spreadsheet_url: return pd.DataFrame()
+    try:
+        sh = gc.open_by_url(spreadsheet_url)
+        try:
+            ws = sh.worksheet("Portfolio")
+        except gspread.exceptions.WorksheetNotFound:
+            ws = sh.add_worksheet(title="Portfolio", rows=100, cols=10)
+            ws.append_row(["日期", "代码", "名称", "策略赛道", "买入价", "持仓数量", "当前状态", "卖出价", "卖出日期", "AI审查结果"])
+            return pd.DataFrame()
+        data = ws.get_all_records()
+        df = pd.DataFrame(data)
+        if df.empty: return df
+        return df[df['当前状态'] == '持有中']
+    except Exception as e:
+        logging.error(f"加载持仓失败: {e}")
+        return pd.DataFrame()
+
+def save_new_buy(stock, track, buy_price, date):
+    """新增一条持有记录"""
+    if not gc: return
+    try:
+        sh = gc.open_by_url(spreadsheet_url)
+        ws = sh.worksheet("Portfolio")
+        ws.append_row([
+            date,
+            stock['code'],
+            stock['name'],
+            track,
+            buy_price,
+            100,
+            "持有中",
+            None, None, None
+        ], value_input_option='USER_ENTERED')
+    except Exception as e:
+        st.error(f"保存买入失败: {e}")
+
+def record_sell_and_review(stock_record, sell_price, date):
+    """标记卖出，调用AI审查交易是否符合策略"""
+    if not gc: return
+    try:
+        sh = gc.open_by_url(spreadsheet_url)
+        ws = sh.worksheet("Portfolio")
+        cell = ws.find(stock_record['代码'])
+        if cell:
+            row = cell.row
+            ws.update_cell(row, 8, sell_price)
+            ws.update_cell(row, 9, date)
+            ws.update_cell(row, 7, "已卖出")
+            review = ai_trade_review(stock_record, sell_price)
+            ws.update_cell(row, 10, review)
+            st.info(f"卖出已记录，AI审查：{review}")
+    except Exception as e:
+        st.error(f"记录卖出失败: {e}")
+
+def ai_trade_review(stock_record, sell_price):
+    """让AI判断卖出是否符合超短线纪律"""
+    if not llm_client: return "无AI"
+    prompt = f"""你是超短线交易教练。请审查以下操作是否符合纪律：
+股票：{stock_record['名称']}({stock_record['代码']})
+策略：{stock_record['策略赛道']}
+买入价：{stock_record['买入价']}，卖出价：{sell_price}
+盈利：{(sell_price - float(stock_record['买入价']))/float(stock_record['买入价'])*100:.1f}%
+请判断：是否触发止盈/止损条件？执行是否有偏差？给出改进建议（40字内）。"""
+    try:
+        resp = llm_client.chat.completions.create(
+            model=CONFIG["LLM_MODEL"],
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=150
+        )
+        return resp.choices[0].message.content
+    except: return "审查失败"
+
 # ================= 侧边栏（必须在使用按钮之前定义） =================
 with st.sidebar:
     st.header("⚙️ 参数")
