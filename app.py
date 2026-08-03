@@ -1286,19 +1286,22 @@ def load_portfolio():
         logging.error(f"加载持仓失败: {e}")
         return pd.DataFrame()
 
-def save_new_buy(stock, track, buy_price, date):
-    """新增一条持有记录"""
+def save_new_buy(stock, track, buy_price, quantity, date):
+    """新增一条持有记录，quantity 为买入股数（整数）"""
     if not gc: return
     try:
         sh = gc.open_by_url(spreadsheet_url)
         ws = sh.worksheet("Portfolio")
+        # 兼容中英文列名
+        code = stock.get('code') or stock.get('代码', '')
+        name = stock.get('name') or stock.get('名称', '')
         ws.append_row([
             date,
-            stock['code'],
-            stock['name'],
+            code,
+            name,
             track,
             buy_price,
-            100,
+            int(quantity),        # 确保整数
             "持有中",
             None, None, None
         ], value_input_option='USER_ENTERED')
@@ -1477,17 +1480,18 @@ elif scan_phase == "buy":
                             ai_buy = float(rec.get('AI建议买点', 0))
                         except:
                             pass
-                        col1, col2 = st.columns([1, 3])
+                        col1, col2, col3 = st.columns([1, 1.5, 1.5])
                         bought = col1.checkbox(f"已买入 {name}({code})", key=f"bought_{code}")
                         buy_price = col2.number_input("实际买入价", value=ai_buy, step=0.01, key=f"buy_price_{code}")
+                        quantity = col3.number_input("买入股数", value=100, step=100, key=f"qty_{code}")
                         if bought:
-                            buy_records.append((rec, buy_price))
-                    if st.form_submit_button("确认买入"):
-                        for rec, price in buy_records:
-                            save_new_buy(rec.to_dict(), rec.get('策略赛道', ''), price, safe_dates['today'])
-                        st.success("买入记录已保存")
-                        st.session_state.scan_phase = "scan"
-                        st.rerun()
+                            buy_records.append((rec, buy_price, quantity))
+                        if st.form_submit_button("确认买入"):
+                            for rec, price, qty in buy_records:
+                                save_new_buy(rec.to_dict(), rec.get('策略赛道', ''), price, qty, safe_dates['today'])
+                            st.success("买入记录已保存")
+                            st.session_state.scan_phase = "scan"
+                            st.rerun()
                 # 如果用户不想买入，也可直接进入扫描
                 if st.button("跳过买入，直接开始扫描"):
                     st.session_state.scan_phase = "scan"
