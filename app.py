@@ -1260,6 +1260,38 @@ def save_tail_snipe_results(results_list, safe_date):
     except Exception as e:
         st.error(f"❌ 尾盘保存失败: {e}")
 
+# ================= 14. Streamlit 主界面 =================
+st.title("👑 四轨制猎手 V27.5 (精简版)")
+safe_dates = get_safe_trade_dates()
+st.caption(f"📅 基准日: {safe_dates['today']} | 昨: {safe_dates['yesterday']}")
+run_autopsy(safe_dates)
+
+# ================= 侧边栏（必须在使用按钮之前定义） =================
+with st.sidebar:
+    st.header("⚙️ 参数")
+    top_n_normal = st.slider("🛡️ 缩量轨 TOP N", 1, 20, CONFIG["TOP_N_NORMAL"])
+    top_n_demon = st.slider("🐉 妖股轨 TOP N", 1, 10, CONFIG["TOP_N_DEMON"])
+    st.divider()
+    st.header("👁️ 自选股监控")
+    watchlist_input = st.text_area("代码", value="600519,000858,300750", height=150)
+    st.divider()
+    st.header("🧬 AI策略进化")
+    st.caption(f"当前状态: {st.session_state.current_active_prompt}")
+    run_evolution = st.button("🔍 分析错题本", use_container_width=True)
+    st.divider()
+    st.header("🔥 尾盘狙击 (14:45)")
+    now = datetime.now(tz_shanghai)
+    if 1430 <= int(now.strftime('%H%M')) <= 1500:
+        st.warning("🎯 尾盘狙击模式可用")
+        run_tail = st.button("🎯 运行尾盘狙击", type="primary", use_container_width=True)
+    else:
+        run_tail = False
+        st.caption("尾盘狙击仅在 14:30-15:00 可用")
+    st.divider()
+    run_market_scan = st.button("🚀 全市场四轨扫描", type="primary", use_container_width=True)
+    run_watchlist = st.button("👁️ 自选股深度诊断", type="secondary", use_container_width=True)
+    st.caption("💡 盘后务必查看「明日竞价确认表」，明早若条件不达标，请放弃买入！")
+    
 # ================= 自选股深度诊断（独立，不触发持仓流程） =================
 if run_watchlist:
     if not tf or not llm_client: st.error("客户端未初始化"); st.stop()
