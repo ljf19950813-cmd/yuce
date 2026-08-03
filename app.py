@@ -1425,19 +1425,19 @@ if scan_phase == "sell":
 
     st.subheader("📌 持仓卖出确认")
     st.warning(f"您目前持有 {len(portfolio_df)} 只股票，请确认是否卖出：")
-        with st.form(key="sell_form"):
-            sell_records = []
-            for _, holding in portfolio_df.iterrows():
-                col1, col2 = st.columns([1, 3])
-                sell = col1.checkbox(f"卖出 {holding['名称']}({holding['代码']})", key=f"sell_{holding['代码']}")
-                price = col2.number_input("卖出价", value=float(holding['买入价']), step=0.01, key=f"sell_price_{holding['代码']}")
-                if sell:
-                    sell_records.append((holding, price))
-            if st.form_submit_button("确认卖出", key="submit_sell"):
-                for holding, price in sell_records:
-                    record_sell_and_review(holding, price, safe_dates['today'])
-                st.success("卖出记录已更新")
-                st.rerun()
+    with st.form(key="sell_form"):
+        sell_records = []
+        for _, holding in portfolio_df.iterrows():
+            col1, col2 = st.columns([1, 3])
+            sell = col1.checkbox(f"卖出 {holding['名称']}({holding['代码']})", key=f"sell_{holding['代码']}")
+            price = col2.number_input("卖出价", value=float(holding['买入价']), step=0.01, key=f"sell_price_{holding['代码']}")
+            if sell:
+                sell_records.append((holding, price))
+        if st.form_submit_button("确认卖出", key="submit_sell"):
+            for holding, price in sell_records:
+                record_sell_and_review(holding, price, safe_dates['today'])
+            st.success("卖出记录已更新")
+            st.rerun()
 
     # 提供“跳过卖出，直接下一步”的按钮，避免死循环
     if st.button("无持仓需卖出，进入买入确认"):
