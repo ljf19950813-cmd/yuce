@@ -782,68 +782,206 @@ def run_autopsy(safe_dates):
         worksheet = sh.worksheet(SHEET_NAME)
         df_history = pd.DataFrame(worksheet.get_all_records())
         if df_history.empty: return
-        if '验尸结果' not in df_history.columns: return
+        # 检查必需列
+        required_cols = ['验尸结果', '日期', '代码', 'AI建议买点']
+        for col in required_cols:
+            if col not in df_history.columns:
+                st.warning(f"表格缺少列: {col}")
+                return
+
+        # 只验尸日期 ≤ T-2 的记录（确保至少过了两个交易日）
         pending = df_history[df_history['验尸结果'] == '待验尸'].copy()
         if pending.empty: return
+
         if '日期' in pending.columns:
-            today_str = safe_dates['today']
-            pending = pending[pending['日期'].astype(str) < today_str]
+            # 获取T-2日期
+            t_minus_2 = safe_dates['day_before']  # 已经是T-2
+            pending = pending[pending['日期'].astype(str) <= t_minus_2]
             if pending.empty:
-                st.info("暂无历史记录可验尸"); return
+                st.info("暂无T+2日可验尸的记录")
+                return
+
+        st.info(f"🔍 检测到 {len(pending)} 条可验尸记录（T+2日），开始模拟卖出...")
+
+        # 需要获取T+1和T+2两天的行情
         symbols_to_check = pending['代码'].unique().tolist()
-        real_data = get_tickflow_data_for_symbols(tf, symbols_to_check)
-        if real_data.empty: return
+        if not tf: return
+
+        # 获取T+1日行情（原有函数）
+        t1_data = get_tickflow_data_for_symbols(tf, symbols_to_check)
+        # 获取T+2日行情（新函数，下面定义）
+        t2_data = get_tickflow_data_for_symbols_offset(tf, symbols_to_check, offset_days=2)
+
+        if t1_data.empty and t2_data.empty:
+            st.warning("无法获取T+1/T+2行情数据")
+            return
+
+        # 读取表头获取列号
         updated_rows = worksheet.get_all_values()
         header = updated_rows[0]
         try:
-            col_high = header.index('T+1日最高')+1
-            col_low = header.index('T+1日最低')+1
-            col_close = header.index('T+1日收盘')+1
-            col_result = header.index('验尸结果')+1
-        except: return
+            col_high = header.index('T+1日最高') + 1
+            col_low = header.index('T+1日最低') + 1
+            col_close = header.index('T+1日收盘') + 1
+            # 新增列（确保表格中已添加这些列）
+            col_t2_open = header.index('T+2日开盘') + 1 if 'T+2日开盘' in header else None
+            col_t2_avg = header.index('T+2日均价') + 1 if 'T+2日均价' in header else None
+            col_sell_price = header.index('模拟卖出价') + 1 if '模拟卖出价' in header else None
+            col_result = header.index('验尸结果') + 1
+        except ValueError as e:
+            st.warning(f"表头缺失关键列，请更新Sheet1表头。缺失: {e}")
+            return
+
         update_count = 0
         for idx, row in pending.iterrows():
             code = str(row['代码']).strip().replace("'", "").replace(" ", "")
-            real_row = real_data[real_data['code'].astype(str).str.strip() == code]
-            if real_row.empty: continue
-            real = real_row.iloc[0]
-            t1_high, t1_low, t1_close = real['high'], real['low'], real['close']
-            t1_open = real.get('open', real['close'])
+            # 获取T+1行情
+            t1_row = t1_data[t1_data['code'].astype(str).str.strip() == code]
+            if t1_row.empty: continue
+            t1 = t1_row.iloc[0]
+            t1_high, t1_low, t1_close = t1['high'], t1['low'], t1['close']
+
+            # 获取T+2行情
+            t2_row = t2_data[t2_data['code'].astype(str).str.strip() == code]
+            if t2_row.empty: continue
+            t2 = t2_row.iloc[0]
+            t2_open = t2['open']
+            t2_high = t2['high']
+            t2_low = t2['low']
+            t2_close = t2['close']
+            # 计算T+2日均价（可用amount/volume或近似均价）
+            try:
+                t2_avg = t2['amount'] / t2['volume'] if t2['volume'] > 0 else (t2_high + t2_low + t2_close) / 3
+            except:
+                t2_avg = (t2_high + t2_low + t2_close) / 3
+
+            # 选择模拟卖出价：这里用开盘价，也可改成均价
+            sell_price = t2_avg
+
+            # 获取买入价
             try:
                 ai_buy = float(row['AI建议买点'])
-                ai_stop = float(row['AI建议止损'])
             except:
-                ai_buy = 0.0; ai_stop = 0.0
-            t1_dict = {'open':t1_open,'high':t1_high,'low':t1_low,'close':t1_close,
-                       'pre_close':real.get('pre_close',0),'pct_chg':real.get('pct_chg',0),
-                       'turnover':real.get('turnover',0),'vol_ratio':real.get('vol_ratio',1)}
-            analysis_text = row.get('AI分析全文','')
-            stock_name = row.get('名称',''); mode = row.get('策略赛道','')
-            ai_result = ai_autopsy_record(analysis_text, t1_dict, stock_name, code, mode)
-            if ai_result:
-                final_result = f"🤖 AI复盘:\n{ai_result[:400]}"
+                ai_buy = 0.0
+            if ai_buy <= 0: continue
+
+            # 检查T+1日是否可成交（简单判断）
+            if ai_buy < t1_low - 0.01 or ai_buy > t1_high + 0.01:
+                final_result = "⛔ 不可执行：T+1日未触及买点"
             else:
-                feasible, reason = check_buy_feasibility_simple(ai_buy, t1_dict)
-                if not feasible:
-                    final_result = f"⛔ 不符合：{reason}"
-                elif t1_low <= ai_stop:
-                    final_result = f"❌ 止损 (最低{t1_low:.2f})"
-                elif t1_high >= ai_buy * 1.05:
-                    final_result = f"🏆 止盈 (最高{t1_high:.2f})"
-                elif t1_close > ai_buy:
-                    final_result = f"✅ 浮盈 (收{t1_close:.2f})"
+                # 计算盈亏
+                pct = (sell_price - ai_buy) / ai_buy * 100
+                # 构造T+1和T+2数据字典给AI
+                t1_dict = {'open': t1['open'], 'high': t1_high, 'low': t1_low, 'close': t1_close,
+                           'pct_chg': t1.get('pct_chg', 0), 'turnover': t1.get('turnover', 0),
+                           'vol_ratio': t1.get('vol_ratio', 1)}
+                t2_dict = {'open': t2_open, 'high': t2_high, 'low': t2_low, 'close': t2_close,
+                           'avg': t2_avg, 'sell_price': sell_price, 'pct': pct}
+                analysis_text = row.get('AI分析全文', '')
+                stock_name = row.get('名称', '')
+                mode = row.get('策略赛道', '')
+
+                ai_result = ai_autopsy_record_v2(analysis_text, t1_dict, t2_dict, stock_name, code, mode)
+                if ai_result:
+                    final_result = f"🤖 T+2验尸:\n{ai_result[:400]}"
                 else:
-                    final_result = f"⚠️ 套牢 (收{t1_close:.2f})"
+                    # 规则兜底
+                    if pct > 5:
+                        final_result = f"🏆 大肉 +{pct:.1f}% (卖{sell_price:.2f})"
+                    elif pct > 0:
+                        final_result = f"✅ 盈利 +{pct:.1f}%"
+                    elif pct > -3:
+                        final_result = f"⚠️ 小亏 {pct:.1f}%"
+                    else:
+                        final_result = f"❌ 亏损 {pct:.1f}%"
+
+            # 写回表格
             sheet_row = idx + 2
-            worksheet.update_cell(sheet_row, col_high, round(t1_high,2))
-            worksheet.update_cell(sheet_row, col_low, round(t1_low,2))
-            worksheet.update_cell(sheet_row, col_close, round(t1_close,2))
+            worksheet.update_cell(sheet_row, col_high, round(t1_high, 2))
+            worksheet.update_cell(sheet_row, col_low, round(t1_low, 2))
+            worksheet.update_cell(sheet_row, col_close, round(t1_close, 2))
+            if col_t2_open:
+                worksheet.update_cell(sheet_row, col_t2_open, round(t2_open, 2))
+            if col_t2_avg:
+                worksheet.update_cell(sheet_row, col_t2_avg, round(t2_avg, 2))
+            if col_sell_price:
+                worksheet.update_cell(sheet_row, col_sell_price, round(sell_price, 2))
             worksheet.update_cell(sheet_row, col_result, final_result)
             update_count += 1
             time.sleep(0.15)
-        st.success(f"验尸完成，更新 {update_count} 条")
+
+        if update_count > 0:
+            st.success(f"💀 T+2验尸完成，更新 {update_count} 条")
+        else:
+            st.warning("没有记录被更新，请检查T+2数据是否充足")
     except Exception as e:
         st.warning(f"验尸异常: {e}")
+
+def get_tickflow_data_for_symbols_offset(tf_client, symbols_list, offset_days=2):
+    """
+    获取相对于最新交易日的偏移日K线。
+    offset_days=1 表示T+1，2表示T+2。
+    """
+    if not tf_client: return pd.DataFrame()
+    # 复用原有函数，但查询多天前数据。这里简单用 count 参数拿到多根K线再取倒数第二根？
+    # 更稳健的方式：获取最近 offset_days+1 根日K，取倒数第 offset_days 根。
+    # 直接在原有 get_tickflow_data_for_symbols 基础上修改，或者写一个新函数。
+    # 为简洁，这里用原有函数获取最近3根K线，然后取特定偏移。
+    parsed = []
+    for s in symbols_list:
+        s = str(s).strip()
+        if '.' in s: parsed.append(f"{s.split('.')[1]}.{s.split('.')[0]}")
+        else: parsed.append(f"{s}.SH" if s.startswith('6') else f"{s}.SZ")
+    rows = []
+    for tf_code in parsed:
+        try:
+            k = tf_client.klines.get(tf_code, period='1d', count=offset_days+2, as_dataframe=True)
+            if k is None or len(k) < offset_days+1: continue
+            # 取倒数第 offset_days 根（从0开始）
+            target = k.iloc[-offset_days-1] if offset_days > 0 else k.iloc[-1]
+            prev = k.iloc[-offset_days-2] if len(k) > offset_days+1 else target
+            close = float(target.get('close', target.get('last_price')))
+            open_p = float(target.get('open', target.get('open_price', close)))
+            high = float(target.get('high', target.get('high_price', close)))
+            low = float(target.get('low', target.get('low_price', close)))
+            amount = float(target.get('amount', 0))
+            vol = float(target.get('volume', 0))
+            rows.append({
+                'code': tf_code.split('.')[0],
+                'open': open_p, 'high': high, 'low': low, 'close': close,
+                'amount': amount, 'volume': vol
+            })
+            time.sleep(0.05)
+        except: continue
+    return pd.DataFrame(rows)
+
+# 修改AI验尸函数，加入T+2信息
+def ai_autopsy_record_v2(analysis_text, t1_dict, t2_dict, stock_name, stock_code, mode):
+    if not llm_client or not analysis_text: return None
+    system_prompt = """你是A股超短线复盘教练。现在进行T+2日验尸，请阅读AI的T日分析、T+1日实际行情和T+2日模拟卖出情况，判断：
+1. 交易计划是否具备可执行性？（触及买点？T+1日是否一字板？）
+2. 如果执行，T+2日模拟卖出价（开盘价）盈利多少？
+3. 策略逻辑是否正确？有无重大误判？
+4. 给出结论标签：✅策略有效 / ⚠️执行偏差 / ❌策略错误 / ⛔不可执行
+5. 输出格式：
+---
+复盘结论：[标签] [简短总结]
+详细分析：[2-3句核心复盘]
+---
+"""
+    user_prompt = f"""股票：{stock_name}({stock_code}) 策略：{mode}
+T日分析：{analysis_text[:1500]}
+T+1日行情：开{t1_dict['open']} 高{t1_dict['high']} 低{t1_dict['low']} 收{t1_dict['close']} 涨幅{t1_dict.get('pct_chg','?')}%
+T+2日模拟卖出：开{t2_dict['open']} 均价{t2_dict.get('avg','?')} 卖出价{t2_dict.get('sell_price','?')} 盈亏{t2_dict.get('pct','?')}%
+请输出复盘结论。"""
+    try:
+        resp = llm_client.chat.completions.create(
+            model=CONFIG["LLM_MODEL"],
+            messages=[{"role":"system","content":system_prompt}, {"role":"user","content":user_prompt}],
+            max_tokens=1000
+        )
+        return resp.choices[0].message.content
+    except: return None
 
 # ================= 11. 导师进化（规则上限） =================
 def generate_prompt_evolution(failed_cases_text, current_prompt_desc):
