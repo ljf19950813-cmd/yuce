@@ -1118,128 +1118,10 @@ def save_tail_snipe_results(results_list, safe_date):
         st.success(f"✅ 已将 {len(results_list)} 条尾盘狙击结果存入 Tail_Snipe！")
     except Exception as e:
         st.error(f"❌ 尾盘保存失败: {e}")
-        
-# ================= 14. Streamlit 主界面 =================
-# ================= 14. Streamlit 主界面 =================
-st.title("👑 四轨制猎手 V27.5 (精简版)")
-safe_dates = get_safe_trade_dates()
-st.caption(f"📅 基准日: {safe_dates['today']} | 昨: {safe_dates['yesterday']}")
-run_autopsy(safe_dates)
 
-def load_portfolio():
-    """从 Portfolio 工作表读取持有中的股票"""
-    if not gc or not spreadsheet_url: return pd.DataFrame()
-    try:
-        sh = gc.open_by_url(spreadsheet_url)
-        # 如果工作表不存在则创建
-        try:
-            ws = sh.worksheet("Portfolio")
-        except gspread.exceptions.WorksheetNotFound:
-            ws = sh.add_worksheet(title="Portfolio", rows=100, cols=10)
-            ws.append_row(["日期", "代码", "名称", "策略赛道", "买入价", "持仓数量", "当前状态", "卖出价", "卖出日期", "AI审查结果"])
-            return pd.DataFrame()
-        data = ws.get_all_records()
-        df = pd.DataFrame(data)
-        if df.empty: return df
-        return df[df['当前状态'] == '持有中']
-    except Exception as e:
-        logging.error(f"加载持仓失败: {e}")
-        return pd.DataFrame()
-
-def save_new_buy(stock, track, buy_price, date):
-    """新增一条持有记录"""
-    if not gc: return
-    try:
-        sh = gc.open_by_url(spreadsheet_url)
-        ws = sh.worksheet("Portfolio")
-        ws.append_row([
-            date,
-            stock['code'],
-            stock['name'],
-            track,
-            buy_price,
-            100,           # 默认100股，可后续自定义
-            "持有中",
-            None, None, None
-        ], value_input_option='USER_ENTERED')
-    except Exception as e:
-        st.error(f"保存买入失败: {e}")
-
-def record_sell_and_review(stock_record, sell_price, date):
-    """标记卖出，调用AI审查交易是否符合策略"""
-    if not gc: return
-    try:
-        # 更新 Portfolio 表：找到该行并更新
-        sh = gc.open_by_url(spreadsheet_url)
-        ws = sh.worksheet("Portfolio")
-        # 简单处理：查找最后一条持有中的该代码记录
-        cell = ws.find(stock_record['代码'])
-        if cell:
-            row = cell.row
-            ws.update_cell(row, 8, sell_price)        # 卖出价
-            ws.update_cell(row, 9, date)               # 卖出日期
-            ws.update_cell(row, 7, "已卖出")
-            # AI审查
-            review = ai_trade_review(stock_record, sell_price)
-            ws.update_cell(row, 10, review)
-            st.info(f"卖出已记录，AI审查：{review}")
-    except Exception as e:
-        st.error(f"记录卖出失败: {e}")
-
-def ai_trade_review(stock_record, sell_price):
-    """让AI判断卖出是否符合超短线纪律"""
-    if not llm_client: return "无AI"
-    prompt = f"""你是超短线交易教练。请审查以下操作是否符合纪律：
-股票：{stock_record['名称']}({stock_record['代码']})
-策略：{stock_record['策略赛道']}
-买入价：{stock_record['买入价']}，卖出价：{sell_price}
-盈利：{(sell_price - float(stock_record['买入价']))/float(stock_record['买入价'])*100:.1f}%
-请判断：是否触发止盈/止损条件？执行是否有偏差？给出改进建议（40字内）。"""
-    try:
-        resp = llm_client.chat.completions.create(
-            model=CONFIG["LLM_MODEL"],
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=150
-        )
-        return resp.choices[0].message.content
-    except: return "审查失败"
-        
-with st.sidebar:
-    st.header("⚙️ 参数")
-    top_n_normal = st.slider("🛡️ 缩量轨 TOP N",1,20,CONFIG["TOP_N_NORMAL"])
-    top_n_demon = st.slider("🐉 妖股轨 TOP N",1,10,CONFIG["TOP_N_DEMON"])
-    st.divider()
-    st.header("👁️ 自选股监控")
-    watchlist_input = st.text_area("代码", value="600519,000858,300750", height=150)
-    st.divider()
-    st.header("🧬 AI策略进化")
-    st.caption(f"当前状态: {st.session_state.current_active_prompt}")
-    run_evolution = st.button("🔍 分析错题本", use_container_width=True)
-    st.divider()
-    st.header("🔥 尾盘狙击 (14:45)")
-    now = datetime.now(tz_shanghai)
-    if 1430 <= int(now.strftime('%H%M')) <= 1500:
-        st.warning("🎯 尾盘狙击模式可用")
-        run_tail = st.button("🎯 运行尾盘狙击", type="primary", use_container_width=True)
-    else:
-        run_tail = False
-        st.caption("尾盘狙击仅在 14:30-15:00 可用")
-    st.divider()
-    run_market_scan = st.button("🚀 全市场四轨扫描", type="primary", use_container_width=True)
-    run_watchlist = st.button("👁️ 自选股深度诊断", type="secondary", use_container_width=True)
-    st.caption("💡 盘后务必查看「明日竞价确认表」，明早若条件不达标，请放弃买入！")
-
-if run_evolution:
-    # 进化逻辑（略，保留原逻辑，使用上面 generate_prompt_evolution）
-    pass
-
-# ========== 全市场扫描 / 自选股诊断 公共处理 ==========
-if run_market_scan or run_watchlist:
+# ================= 自选股深度诊断（独立，不触发持仓流程） =================
+if run_watchlist:
     if not tf or not llm_client: st.error("客户端未初始化"); st.stop()
-    CONFIG["TOP_N_NORMAL"] = top_n_normal
-    CONFIG["TOP_N_DEMON"] = top_n_demon
-
-    # 获取市场数据（公共部分）
     with st.spinner("获取日线数据..."):
         df, market_avg_pct = get_data_tickflow()
         if df is None: st.error("数据获取失败"); st.stop()
@@ -1247,180 +1129,192 @@ if run_market_scan or run_watchlist:
     st.subheader("🌍 大盘环境")
     st.text(market_context)
 
-    # ========== 全市场扫描：显示持仓区 + 昨日推荐 ==========
-    if run_market_scan:
-        st.subheader("📌 持仓操作区")
-        portfolio_df = load_portfolio()
+    symbols = [s.strip() for s in re.split(r'[,\n\s]+', watchlist_input) if s.strip()]
+    w_df = get_tickflow_data_for_symbols(tf, symbols)
+    w_df = financial_blacklist_filter(w_df)
+    watchlist_results = []
+    if not w_df.empty:
+        w_df = calculate_real_vol_ratio(w_df)
+        for _, row in w_df.iterrows():
+            history = get_history_context(tf, row['tf_code'])
+            reasoning, final = analyze_with_llm(row.to_dict(), '', market_context, history, "watchlist")
+            watchlist_results.append({'row':row,'reasoning':reasoning,'final':final})
+            time.sleep(1)
+        st.subheader("🚑 自选股诊断")
+        for item in watchlist_results:
+            with st.expander(f"{item['row']['name']}"):
+                st.markdown(item['final'])
+        # HTML报告
+        st.divider()
+        html_data = export_to_html_report([], [], [], watchlist_results, market_context, safe_dates)
+        if html_data:
+            st.session_state.html_report_data = html_data
+            st.session_state.html_report_filename = f"自选股诊断_{safe_dates['now_str']}.html"
+            st.info("✅ 报告已生成，请滑动到页面最底部点击下载按钮。")
+    else:
+        st.warning("⚠️ 未获取到有效自选股数据")
 
-        if not portfolio_df.empty:
-            st.warning(f"您目前持有 {len(portfolio_df)} 只股票，请确认操作：")
+# ================= 全市场四轨扫描（含持仓确认 → 买入确认 → 扫描） =================
+if run_market_scan:
+    if not tf or not llm_client: st.error("客户端未初始化"); st.stop()
+
+    # ----- 阶段1：持仓卖出确认（若有持仓） -----
+    portfolio_df = load_portfolio()
+    if not portfolio_df.empty:
+        st.subheader("📌 持仓卖出确认")
+        st.warning(f"您目前持有 {len(portfolio_df)} 只股票，请确认是否卖出：")
+        with st.form("sell_form"):
+            sell_records = []
             for _, holding in portfolio_df.iterrows():
-                with st.expander(f"🔔 {holding['名称']}({holding['代码']}) | 买入价 {holding['买入价']} | 持仓中"):
-                    action = st.radio(
-                        f"选择操作：",
-                        ["继续持有", "我要卖出"],
-                        key=f"sell_{holding['代码']}"
-                    )
-                    if action == "我要卖出":
-                        sell_price = st.number_input(
-                            "卖出价格：",
-                            min_value=0.0,
-                            value=float(holding['买入价']),
-                            step=0.01,
-                            key=f"price_{holding['代码']}"
-                        )
-                        if st.button("确认卖出", key=f"confirm_sell_{holding['代码']}"):
-                            record_sell_and_review(holding, sell_price, safe_dates['today'])
-                            st.success("已记录卖出")
-                            st.rerun()
-        else:
-            st.info("当前无持仓")
+                col1, col2 = st.columns([1, 3])
+                sell = col1.checkbox(f"卖出 {holding['名称']}({holding['代码']})", key=f"sell_{holding['代码']}")
+                price = col2.number_input("卖出价", value=float(holding['买入价']), step=0.01, key=f"sell_price_{holding['代码']}")
+                if sell:
+                    sell_records.append((holding, price))
+            submitted = st.form_submit_button("确认卖出")
+            if submitted:
+                for holding, price in sell_records:
+                    record_sell_and_review(holding, price, safe_dates['today'])
+                st.success("卖出记录已更新")
+                st.rerun()   # 刷新页面，如果还有持仓则继续卖出，否则进入买入阶段
+        st.stop()   # 如果显示了卖出表单，就不再继续执行后续扫描
+    # 如果没有持仓或已处理完卖出，则继续
 
-        st.subheader("📥 昨日推荐回顾")
-        try:
-            sh = gc.open_by_url(spreadsheet_url)
-            ws = sh.worksheet(SHEET_NAME)
-            data = ws.get_all_records()
-            df_hist = pd.DataFrame(data)
-            if df_hist.empty:
-                st.info("暂无历史推荐记录")
-            else:
-                date_col = None
-                for col in df_hist.columns:
-                    if '日' in str(col):
-                        date_col = col
-                        break
-                if date_col is None:
-                    date_col = df_hist.columns[0]
-                yesterday_str = safe_dates['yesterday']
-                mask = df_hist[date_col].astype(str).str.strip() == str(yesterday_str)
-                yesterday_recs = df_hist[mask]
-                if not yesterday_recs.empty:
+    # ----- 阶段2：昨日推荐买入确认 -----
+    st.subheader("📥 昨日推荐买入确认")
+    try:
+        sh = gc.open_by_url(spreadsheet_url)
+        ws = sh.worksheet(SHEET_NAME)
+        data = ws.get_all_records()
+        df_hist = pd.DataFrame(data)
+        if df_hist.empty:
+            st.info("暂无历史推荐记录")
+        else:
+            # 自适应日期列
+            date_col = next((col for col in df_hist.columns if '日' in str(col)), df_hist.columns[0])
+            yesterday_str = safe_dates['yesterday']
+            mask = df_hist[date_col].astype(str).str.strip() == str(yesterday_str)
+            yesterday_recs = df_hist[mask]
+            if not yesterday_recs.empty:
+                with st.form("buy_form"):
+                    buy_records = []
                     for _, rec in yesterday_recs.iterrows():
-                        with st.expander(f"📅 {rec.get('名称', rec.iloc[1])} ({rec.get('代码', rec.iloc[2])})"):
-                            bought = st.checkbox("我已买入", key=f"bought_{rec.iloc[2]}")
-                            if bought:
-                                buy_price = st.number_input(
-                                    "实际买入价：",
-                                    value=float(rec.get('AI建议买点', 0)),
-                                    step=0.01,
-                                    key=f"buy_price_{rec.iloc[2]}"
-                                )
-                                if st.button("确认买入", key=f"confirm_buy_{rec.iloc[2]}"):
-                                    save_new_buy(rec.to_dict(), rec.get('策略赛道', ''), buy_price, safe_dates['today'])
-                                    st.success("已加入持仓")
-                                    st.rerun()
-                else:
-                    st.info(f"昨日({yesterday_str})无推荐记录")
-        except Exception as e:
-            st.caption(f"无法加载昨日推荐: {e}")
+                        name = rec.get('名称', '未知')
+                        code = rec.get('代码', '')
+                        ai_buy = 0.0
+                        try:
+                            ai_buy = float(rec.get('AI建议买点', 0))
+                        except:
+                            pass
+                        col1, col2 = st.columns([1, 3])
+                        bought = col1.checkbox(f"已买入 {name}({code})", key=f"bought_{code}")
+                        buy_price = col2.number_input("实际买入价", value=ai_buy, step=0.01, key=f"buy_price_{code}")
+                        if bought:
+                            buy_records.append((rec, buy_price))
+                    submitted = st.form_submit_button("确认买入")
+                    if submitted:
+                        for rec, price in buy_records:
+                            save_new_buy(rec.to_dict(), rec.get('策略赛道', ''), price, safe_dates['today'])
+                        st.success("买入记录已保存")
+                        st.rerun()   # 刷新后进入扫描阶段
+                st.stop()   # 显示了买入表单，就不再执行后续扫描
+            else:
+                st.info(f"昨日({yesterday_str})无推荐记录")
+    except Exception as e:
+        st.caption(f"无法加载昨日推荐: {e}")
+        st.stop()
 
-    # ========== 初始化结果列表 ==========
-    normal_results, demon_results, defense_results, watchlist_results = [], [], [], []
+    # ----- 阶段3：全市场扫描（只有前两个阶段都完成后才会执行） -----
+    with st.spinner("获取日线数据..."):
+        df, market_avg_pct = get_data_tickflow()
+        if df is None: st.error("数据获取失败"); st.stop()
+    market_context, market_ratio = get_market_context(tf, df)
+    st.subheader("🌍 大盘环境")
+    st.text(market_context)
 
-    # ========== 全市场四轨扫描 ==========
-    if run_market_scan:
-        normal_df = filter_normal_stocks(df)
-        normal_df = financial_blacklist_filter(normal_df)
-        normal_df = filter_recent_surge(normal_df, days=5, max_pct=25)
-        if not normal_df.empty:
-            normal_df = calculate_real_vol_ratio(normal_df)
-            normal_df = normal_df[normal_df['vol_ratio'] <= 1.2].head(CONFIG['TOP_N_NORMAL'])
-        # 轨道二：妖股
-        demon_df = filter_demon_stocks(df)
-        demon_df = financial_blacklist_filter(demon_df)
-        demon_df = filter_recent_surge(demon_df, days=3, max_pct=40)
-        if not demon_df.empty:
-            demon_df = calculate_real_vol_ratio(demon_df).head(CONFIG['TOP_N_DEMON'])
-        # 轨道三：逆风突破（条件激活）
-        defense_df = pd.DataFrame()
-        if market_ratio < 1.0 or market_avg_pct < 0.0:
-            defense_df = filter_defense_stocks(df, tf, market_avg_pct)
-            defense_df = financial_blacklist_filter(defense_df)
-            defense_df = filter_recent_surge(defense_df, days=5, max_pct=20)
-            if not defense_df.empty:
-                defense_df = calculate_real_vol_ratio(defense_df)
-                defense_df = defense_df[defense_df['vol_ratio'] <= 2.5].head(CONFIG['TOP_N_DEFENSE'])
-        all_codes = []
-        if not normal_df.empty: all_codes.extend(normal_df['tf_code'].tolist())
-        if not demon_df.empty: all_codes.extend(demon_df['tf_code'].tolist())
-        if not defense_df.empty: all_codes.extend(defense_df['tf_code'].tolist())
-        minute_features = get_minute_features(tf, list(set(all_codes)))
-        total_tasks = len(normal_df) + len(demon_df) + len(defense_df)
-        if total_tasks == 0:
-            st.warning("无符合条件标的")
-        else:
-            progress_bar = st.progress(0)
-            current = 0
-            for _, row in normal_df.iterrows():
-                current+=1; progress_bar.progress(current/total_tasks)
-                history = get_history_context(tf, row['tf_code'])
-                reasoning, final = analyze_with_llm(row.to_dict(), minute_features.get(row['tf_code'],''), market_context, history, "normal")
-                normal_results.append({'row':row,'reasoning':reasoning,'final':final}); time.sleep(1)
-            for _, row in demon_df.iterrows():
-                current+=1; progress_bar.progress(current/total_tasks)
-                history = get_history_context(tf, row['tf_code'])
-                reasoning, final = analyze_with_llm(row.to_dict(), minute_features.get(row['tf_code'],''), market_context, history, "demon")
-                demon_results.append({'row':row,'reasoning':reasoning,'final':final}); time.sleep(1)
-            for _, row in defense_df.iterrows():
-                current+=1; progress_bar.progress(current/total_tasks)
-                history = get_history_context(tf, row['tf_code'])
-                reasoning, final = analyze_with_llm(row.to_dict(), minute_features.get(row['tf_code'],''), market_context, history, "defense")
-                defense_results.append({'row':row,'reasoning':reasoning,'final':final}); time.sleep(1)
-            progress_bar.empty()
-            # 竞价确认表
-            if normal_results or demon_results or defense_results:
-                st.subheader("📋 明日竞价入场确认表")
-                all_stocks = normal_results + demon_results + defense_results
-                for item in all_stocks:
-                    row, final = item['row'], item['final']
-                    cond = generate_auction_checklist(row, final)
-                    with st.expander(f"🔍 {cond['name']} ({cond['code']}) 竞价条件"):
-                        for c in cond['conditions']: st.write(f"- {c}")
-                        st.caption("⚠️ 若任一条件不满足，放弃买入")
-            save_today_predictions(normal_results, demon_results, defense_results, safe_dates)
+    normal_results, demon_results, defense_results = [], [], []
 
-        # 展示轨道结果
-        st.subheader("🛡️ 轨道一：缩量潜伏池")
-        for i, item in enumerate(normal_results,1):
-            with st.expander(f"[{i}] {item['row']['name']} 涨幅{item['row']['pct_chg']:.1f}%"):
-                st.markdown(item['final'])
-        st.subheader("🐉 轨道二：妖股池")
-        for idx, item in enumerate(demon_results, 1):
-            row = item['row']
-            with st.expander(f"[{idx}] {row['name']} 涨幅{row['pct_chg']:.1f}%"):
-                if row.get('chip_warning'):
-                    st.caption(f"⚠️ 风险提示：{row['chip_warning']}")
-                st.markdown(item['final'])
-        st.subheader("🔥 轨道三：逆风突破池")
-        for i, item in enumerate(defense_results,1):
-            with st.expander(f"[{i}] {item['row']['name']} 涨幅{item['row']['pct_chg']:.1f}%"):
-                st.markdown(item['final'])
+    # 轨道一
+    normal_df = filter_normal_stocks(df)
+    normal_df = financial_blacklist_filter(normal_df)
+    normal_df = filter_recent_surge(normal_df, days=5, max_pct=25)
+    if not normal_df.empty:
+        normal_df = calculate_real_vol_ratio(normal_df)
+        normal_df = normal_df[normal_df['vol_ratio'] <= 1.2].head(CONFIG['TOP_N_NORMAL'])
 
-    # ========== 自选股深度诊断 ==========
-    if run_watchlist:
-        symbols = [s.strip() for s in re.split(r'[,\n\s]+', watchlist_input) if s.strip()]
-        w_df = get_tickflow_data_for_symbols(tf, symbols)
-        w_df = financial_blacklist_filter(w_df)
-        if not w_df.empty:
-            w_df = calculate_real_vol_ratio(w_df)
-            for _, row in w_df.iterrows():
-                history = get_history_context(tf, row['tf_code'])
-                reasoning, final = analyze_with_llm(row.to_dict(), '', market_context, history, "watchlist")
-                watchlist_results.append({'row':row,'reasoning':reasoning,'final':final})
-                time.sleep(1)
-            st.subheader("🚑 自选股诊断")
-            for item in watchlist_results:
-                with st.expander(f"{item['row']['name']}"):
-                    st.markdown(item['final'])
-            st.divider()
-            html_data = export_to_html_report([], [], [], watchlist_results, market_context, safe_dates)
-            if html_data:
-                st.session_state.html_report_data = html_data
-                st.session_state.html_report_filename = f"自选股诊断_{safe_dates['now_str']}.html"
-                st.info("✅ 报告已生成，请滑动到页面最底部点击下载按钮。")
-        else:
-            st.warning("⚠️ 未获取到有效自选股数据，请检查代码输入是否正确")
+    # 轨道二：妖股
+    demon_df = filter_demon_stocks(df)
+    demon_df = financial_blacklist_filter(demon_df)
+    demon_df = filter_recent_surge(demon_df, days=3, max_pct=40)
+    if not demon_df.empty:
+        demon_df = calculate_real_vol_ratio(demon_df).head(CONFIG['TOP_N_DEMON'])
+
+    # 轨道三：逆风突破
+    defense_df = pd.DataFrame()
+    if market_ratio < 1.0 or market_avg_pct < 0.0:
+        defense_df = filter_defense_stocks(df, tf, market_avg_pct)
+        defense_df = financial_blacklist_filter(defense_df)
+        defense_df = filter_recent_surge(defense_df, days=5, max_pct=20)
+        if not defense_df.empty:
+            defense_df = calculate_real_vol_ratio(defense_df)
+            defense_df = defense_df[defense_df['vol_ratio'] <= 2.5].head(CONFIG['TOP_N_DEFENSE'])
+
+    all_codes = []
+    if not normal_df.empty: all_codes.extend(normal_df['tf_code'].tolist())
+    if not demon_df.empty: all_codes.extend(demon_df['tf_code'].tolist())
+    if not defense_df.empty: all_codes.extend(defense_df['tf_code'].tolist())
+    minute_features = get_minute_features(tf, list(set(all_codes)))
+    total_tasks = len(normal_df) + len(demon_df) + len(defense_df)
+    if total_tasks == 0:
+        st.warning("无符合条件标的")
+    else:
+        progress_bar = st.progress(0)
+        current = 0
+        for _, row in normal_df.iterrows():
+            current+=1; progress_bar.progress(current/total_tasks)
+            history = get_history_context(tf, row['tf_code'])
+            reasoning, final = analyze_with_llm(row.to_dict(), minute_features.get(row['tf_code'],''), market_context, history, "normal")
+            normal_results.append({'row':row,'reasoning':reasoning,'final':final}); time.sleep(1)
+        for _, row in demon_df.iterrows():
+            current+=1; progress_bar.progress(current/total_tasks)
+            history = get_history_context(tf, row['tf_code'])
+            reasoning, final = analyze_with_llm(row.to_dict(), minute_features.get(row['tf_code'],''), market_context, history, "demon")
+            demon_results.append({'row':row,'reasoning':reasoning,'final':final}); time.sleep(1)
+        for _, row in defense_df.iterrows():
+            current+=1; progress_bar.progress(current/total_tasks)
+            history = get_history_context(tf, row['tf_code'])
+            reasoning, final = analyze_with_llm(row.to_dict(), minute_features.get(row['tf_code'],''), market_context, history, "defense")
+            defense_results.append({'row':row,'reasoning':reasoning,'final':final}); time.sleep(1)
+        progress_bar.empty()
+
+        # 竞价确认表
+        if normal_results or demon_results or defense_results:
+            st.subheader("📋 明日竞价入场确认表")
+            all_stocks = normal_results + demon_results + defense_results
+            for item in all_stocks:
+                row, final = item['row'], item['final']
+                cond = generate_auction_checklist(row, final)
+                with st.expander(f"🔍 {cond['name']} ({cond['code']}) 竞价条件"):
+                    for c in cond['conditions']: st.write(f"- {c}")
+                    st.caption("⚠️ 若任一条件不满足，放弃买入")
+        save_today_predictions(normal_results, demon_results, defense_results, safe_dates)
+
+    # 展示轨道结果
+    st.subheader("🛡️ 轨道一：缩量潜伏池")
+    for i, item in enumerate(normal_results,1):
+        with st.expander(f"[{i}] {item['row']['name']} 涨幅{item['row']['pct_chg']:.1f}%"):
+            st.markdown(item['final'])
+    st.subheader("🐉 轨道二：妖股池")
+    for idx, item in enumerate(demon_results, 1):
+        row = item['row']
+        with st.expander(f"[{idx}] {row['name']} 涨幅{row['pct_chg']:.1f}%"):
+            if row.get('chip_warning'):
+                st.caption(f"⚠️ 风险提示：{row['chip_warning']}")
+            st.markdown(item['final'])
+    st.subheader("🔥 轨道三：逆风突破池")
+    for i, item in enumerate(defense_results,1):
+        with st.expander(f"[{i}] {item['row']['name']} 涨幅{item['row']['pct_chg']:.1f}%"):
+            st.markdown(item['final'])
             
 # ========== 尾盘狙击（独立功能） ==========
 if run_tail:
