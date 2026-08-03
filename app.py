@@ -865,7 +865,107 @@ def generate_prompt_evolution(failed_cases_text, current_prompt_desc):
         return f"❌ {e}", None
 
 # ================= 12. HTML 报告导出（略，如需要可加） =================
-def clean_display_text(t): return t
+def clean_display_text(final_text):
+    if not final_text: return final_text
+    cleaned = re.sub(r'\n?\{[^{}]*"rating"[^{}]*\}\s*$', '', final_text)
+    cleaned = re.sub(r'━{5,}.*?━{5,}', '', cleaned, flags=re.DOTALL)
+    return cleaned.strip()
+    
+def robust_md_to_html(md_text):
+    if not md_text: return "<p>【暂无分析内容】</p>"
+    html = md_text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+    html = re.sub(r'^#{1,4}\s+(.*?)$', r'<h3>\1</h3>', html, flags=re.MULTILINE)
+    html = re.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', html)
+    html = re.sub(r'\*(.*?)\*', r'<em>\1</em>', html)
+    lines = html.split('\n')
+    processed_lines = []
+    in_list = False
+    for line in lines:
+        stripped = line.strip()
+        is_list_item = re.match(r'^[-*]\s+(.*)', stripped) or re.match(r'^\d+\.\s+(.*)', stripped)
+        if is_list_item:
+            if not in_list:
+                processed_lines.append('<ul>')
+                in_list = True
+            content = re.sub(r'^[-*]\s+', '', stripped)
+            content = re.sub(r'^\d+\.\s+', '', content)
+            processed_lines.append(f'<li>{content}</li>')
+        else:
+            if in_list:
+                processed_lines.append('</ul>')
+                in_list = False
+            if stripped.startswith('<h3>'):
+                processed_lines.append(stripped)
+            elif stripped == '':
+                processed_lines.append('<br>')
+            else:
+                processed_lines.append(f'<p>{stripped}</p>')
+    if in_list: processed_lines.append('</ul>')
+    return '\n'.join(processed_lines)
+
+def export_to_html_report(normal_results, demon_results, defense_results, watchlist_results, market_context, safe_dates):
+    css_style = """
+    <style>
+    body { font-family: 'Segoe UI', 'Microsoft YaHei', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; max-width: 1000px; margin: 0 auto; padding: 20px; background: #f9f9f9; }
+    .header { text-align: center; border-bottom: 3px solid #2c3e50; padding-bottom: 15px; margin-bottom: 30px; }
+    .header h1 { color: #2c3e50; margin: 0; }
+    .header p { color: #7f8c8d; margin: 5px 0 0; }
+    .market-box { background: #fff; border-left: 5px solid #3498db; padding: 15px; margin-bottom: 30px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); white-space: pre-wrap; font-family: monospace; }
+    .track-title { background: #2c3e50; color: #fff; padding: 10px 15px; border-radius: 5px 5px 0 0; margin-top: 40px; font-size: 1.2em; font-weight: bold; page-break-before: always; }
+    .stock-card { background: #fff; border: 1px solid #ddd; border-radius: 0 0 5px 5px; padding: 20px; margin-bottom: 20px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); page-break-inside: avoid; }
+    .stock-header { display: flex; justify-content: space-between; border-bottom: 1px dashed #ccc; padding-bottom: 10px; margin-bottom: 15px; }
+    .stock-name { font-size: 1.3em; font-weight: bold; color: #e74c3c; }
+    .stock-code { color: #7f8c8d; font-size: 1.1em; }
+    .stock-metrics { display: flex; flex-wrap: wrap; gap: 10px; font-size: 0.9em; color: #555; margin-bottom: 15px; background: #f8f9fa; padding: 8px; border-radius: 4px;}
+    .metric-item { padding: 4px 8px; background: #e9ecef; border-radius: 3px; }
+    .analysis-content h3 { color: #2980b9; border-bottom: 1px solid #eee; padding-bottom: 5px; margin-top: 20px; }
+    .analysis-content ul { padding-left: 20px; margin: 10px 0; }
+    .analysis-content li { margin-bottom: 8px; }
+    .analysis-content strong { color: #c0392b; }
+    .analysis-content p { margin: 8px 0; }
+    @media print { 
+        body { background: #fff; } 
+        .stock-card { break-inside: avoid; page-break-inside: avoid; } 
+        .track-title { break-before: page; page-break-before: always; }
+    }
+    </style>
+    """
+    html_parts = [f"<!DOCTYPE html><html lang='zh-CN'><head><meta charset='UTF-8'><title>四轨制猎手复盘报告</title>{css_style}</head><body>"]
+    html_parts.append(f"<div class='header'><h1>👑 四轨制猎手实战报告 (V27.3)</h1><p>生成时间: {safe_dates['now_str']} | 基准日(T日): {safe_dates['today']}</p></div>")
+    html_parts.append("<h2>🌍 今日大盘与情绪环境</h2>")
+    html_parts.append(f"<div class='market-box'>{market_context}</div>")
+    
+    def render_track(track_name, track_emoji, results, mode_type):
+        if not results: return ""
+        track_html = f"<div class='track-title'>{track_emoji} {track_name}</div>"
+        for item in results:
+            row, final = item['row'], item['final']
+            pct_color = "#e74c3c" if row['pct_chg'] >= 0 else "#27ae60"
+            analysis_html = robust_md_to_html(clean_display_text(final))
+            track_html += f"""
+            <div class="stock-card">
+                <div class="stock-header">
+                    <span class="stock-name">{row['name']}</span>
+                    <span class="stock-code">{row['code']} | {row['board']}</span>
+                </div>
+                <div class="stock-metrics">
+                    <span class="metric-item">当前价: {row['close']:.2f}</span>
+                    <span class="metric-item" style="color:{pct_color}">涨幅: {row['pct_chg']:.2f}%</span>
+                    <span class="metric-item">换手: {row['turnover']:.2f}%</span>
+                    <span class="metric-item">量比: {row.get('vol_ratio', 0):.2f}</span>
+                    <span class="metric-item">成交额: {row['amount']/100000000:.1f}亿</span>
+                </div>
+                <div class="analysis-content">{analysis_html}</div>
+            </div>
+            """
+        return track_html
+
+    html_parts.append(render_track("轨道一：缩量潜伏池", "🛡️", normal_results, "normal"))
+    html_parts.append(render_track("轨道二：主板妖股池", "🐉", demon_results, "demon"))
+    html_parts.append(render_track("轨道三：逆风突破池", "🔥", defense_results, "defense"))
+    html_parts.append(render_track("自选股深度诊断", "👁️", watchlist_results, "watchlist"))
+    html_parts.append("</body></html>")
+    return "\n".join(html_parts).encode('utf-8')
 
 # ================= 13. 尾盘狙击（原样保留） =================
 def tail_sniper_scan():
@@ -1020,6 +1120,7 @@ def save_tail_snipe_results(results_list, safe_date):
         st.error(f"❌ 尾盘保存失败: {e}")
         
 # ================= 14. Streamlit 主界面 =================
+# ================= 14. Streamlit 主界面 =================
 st.title("👑 四轨制猎手 V27.5 (精简版)")
 safe_dates = get_safe_trade_dates()
 st.caption(f"📅 基准日: {safe_dates['today']} | 昨: {safe_dates['yesterday']}")
@@ -1132,72 +1233,92 @@ if run_evolution:
     # 进化逻辑（略，保留原逻辑，使用上面 generate_prompt_evolution）
     pass
 
+# ========== 全市场扫描 / 自选股诊断 公共处理 ==========
 if run_market_scan or run_watchlist:
-    st.subheader("📌 持仓操作区")
-    portfolio_df = load_portfolio()
-
-    if not portfolio_df.empty:
-        # 先处理持有股票，询问是否卖出
-        st.warning(f"您目前持有 {len(portfolio_df)} 只股票，请确认操作：")
-        for _, holding in portfolio_df.iterrows():
-            with st.expander(f"🔔 {holding['名称']}({holding['代码']}) | 买入价 {holding['买入价']} | 持仓中"):
-                action = st.radio(
-                    f"选择操作：",
-                    ["继续持有", "我要卖出"],
-                    key=f"sell_{holding['代码']}"
-                )
-                if action == "我要卖出":
-                    sell_price = st.number_input(
-                        "卖出价格：",
-                        min_value=0.0,
-                        value=float(holding['买入价']),
-                        step=0.01,
-                        key=f"price_{holding['代码']}"
-                    )
-                    if st.button("确认卖出", key=f"confirm_sell_{holding['代码']}"):
-                        record_sell_and_review(holding, sell_price, safe_dates['today'])
-                        st.success("已记录卖出")
-                        st.rerun()
-    else:
-        st.info("当前无持仓")
-
-    # 询问昨日推荐是否已买入（如果昨日扫描有结果并保存了）
-    st.subheader("📥 昨日推荐回顾")
-    try:
-        sh = gc.open_by_url(spreadsheet_url)
-        ws = sh.worksheet(SHEET_NAME)
-        data = ws.get_all_records()
-        df_hist = pd.DataFrame(data)
-        yesterday_str = safe_dates['yesterday']
-        yesterday_recs = df_hist[df_hist['日期'].astype(str) == yesterday_str]
-        if not yesterday_recs.empty:
-            for _, rec in yesterday_recs.iterrows():
-                with st.expander(f"📅 {rec['名称']}({rec['代码']}) | {rec['策略赛道']} | AI买点 {rec['AI建议买点']}"):
-                    bought = st.checkbox("我已买入", key=f"bought_{rec['代码']}")
-                    if bought:
-                        buy_price = st.number_input(
-                            "实际买入价：",
-                            value=float(rec['AI建议买点']),
-                            step=0.01,
-                            key=f"buy_price_{rec['代码']}"
-                        )
-                        if st.button("确认买入", key=f"confirm_buy_{rec['代码']}"):
-                            save_new_buy(rec, rec['策略赛道'], buy_price, safe_dates['today'])
-                            st.success("已加入持仓")
-                            st.rerun()
-    except Exception as e:
-        st.caption(f"无法加载昨日推荐: {e}")
     if not tf or not llm_client: st.error("客户端未初始化"); st.stop()
     CONFIG["TOP_N_NORMAL"] = top_n_normal
     CONFIG["TOP_N_DEMON"] = top_n_demon
+
+    # 获取市场数据（公共部分）
     with st.spinner("获取日线数据..."):
         df, market_avg_pct = get_data_tickflow()
         if df is None: st.error("数据获取失败"); st.stop()
     market_context, market_ratio = get_market_context(tf, df)
     st.subheader("🌍 大盘环境")
     st.text(market_context)
+
+    # ========== 全市场扫描：显示持仓区 + 昨日推荐 ==========
+    if run_market_scan:
+        st.subheader("📌 持仓操作区")
+        portfolio_df = load_portfolio()
+
+        if not portfolio_df.empty:
+            st.warning(f"您目前持有 {len(portfolio_df)} 只股票，请确认操作：")
+            for _, holding in portfolio_df.iterrows():
+                with st.expander(f"🔔 {holding['名称']}({holding['代码']}) | 买入价 {holding['买入价']} | 持仓中"):
+                    action = st.radio(
+                        f"选择操作：",
+                        ["继续持有", "我要卖出"],
+                        key=f"sell_{holding['代码']}"
+                    )
+                    if action == "我要卖出":
+                        sell_price = st.number_input(
+                            "卖出价格：",
+                            min_value=0.0,
+                            value=float(holding['买入价']),
+                            step=0.01,
+                            key=f"price_{holding['代码']}"
+                        )
+                        if st.button("确认卖出", key=f"confirm_sell_{holding['代码']}"):
+                            record_sell_and_review(holding, sell_price, safe_dates['today'])
+                            st.success("已记录卖出")
+                            st.rerun()
+        else:
+            st.info("当前无持仓")
+
+        st.subheader("📥 昨日推荐回顾")
+        try:
+            sh = gc.open_by_url(spreadsheet_url)
+            ws = sh.worksheet(SHEET_NAME)
+            data = ws.get_all_records()
+            df_hist = pd.DataFrame(data)
+            if df_hist.empty:
+                st.info("暂无历史推荐记录")
+            else:
+                date_col = None
+                for col in df_hist.columns:
+                    if '日' in str(col):
+                        date_col = col
+                        break
+                if date_col is None:
+                    date_col = df_hist.columns[0]
+                yesterday_str = safe_dates['yesterday']
+                mask = df_hist[date_col].astype(str).str.strip() == str(yesterday_str)
+                yesterday_recs = df_hist[mask]
+                if not yesterday_recs.empty:
+                    for _, rec in yesterday_recs.iterrows():
+                        with st.expander(f"📅 {rec.get('名称', rec.iloc[1])} ({rec.get('代码', rec.iloc[2])})"):
+                            bought = st.checkbox("我已买入", key=f"bought_{rec.iloc[2]}")
+                            if bought:
+                                buy_price = st.number_input(
+                                    "实际买入价：",
+                                    value=float(rec.get('AI建议买点', 0)),
+                                    step=0.01,
+                                    key=f"buy_price_{rec.iloc[2]}"
+                                )
+                                if st.button("确认买入", key=f"confirm_buy_{rec.iloc[2]}"):
+                                    save_new_buy(rec.to_dict(), rec.get('策略赛道', ''), buy_price, safe_dates['today'])
+                                    st.success("已加入持仓")
+                                    st.rerun()
+                else:
+                    st.info(f"昨日({yesterday_str})无推荐记录")
+        except Exception as e:
+            st.caption(f"无法加载昨日推荐: {e}")
+
+    # ========== 初始化结果列表 ==========
     normal_results, demon_results, defense_results, watchlist_results = [], [], [], []
 
+    # ========== 全市场四轨扫描 ==========
     if run_market_scan:
         normal_df = filter_normal_stocks(df)
         normal_df = financial_blacklist_filter(normal_df)
@@ -1207,11 +1328,11 @@ if run_market_scan or run_watchlist:
             normal_df = normal_df[normal_df['vol_ratio'] <= 1.2].head(CONFIG['TOP_N_NORMAL'])
         # 轨道二：妖股
         demon_df = filter_demon_stocks(df)
-        demon_df = financial_blacklist_filter(demon_df)  # 仅财务底线排雷
+        demon_df = financial_blacklist_filter(demon_df)
         demon_df = filter_recent_surge(demon_df, days=3, max_pct=40)
         if not demon_df.empty:
-            demon_df = calculate_real_vol_ratio(demon_df).head(CONFIG['TOP_N_DEMON']) 
-    # 这里不再根据量比过滤，但筹码断层会体现在vol_ratio=99上，妖股可以忽略99，也可保留为提醒
+            demon_df = calculate_real_vol_ratio(demon_df).head(CONFIG['TOP_N_DEMON'])
+        # 轨道三：逆风突破（条件激活）
         defense_df = pd.DataFrame()
         if market_ratio < 1.0 or market_avg_pct < 0.0:
             defense_df = filter_defense_stocks(df, tf, market_avg_pct)
@@ -1226,7 +1347,8 @@ if run_market_scan or run_watchlist:
         if not defense_df.empty: all_codes.extend(defense_df['tf_code'].tolist())
         minute_features = get_minute_features(tf, list(set(all_codes)))
         total_tasks = len(normal_df) + len(demon_df) + len(defense_df)
-        if total_tasks == 0: st.warning("无符合条件标的")
+        if total_tasks == 0:
+            st.warning("无符合条件标的")
         else:
             progress_bar = st.progress(0)
             current = 0
@@ -1257,6 +1379,7 @@ if run_market_scan or run_watchlist:
                         for c in cond['conditions']: st.write(f"- {c}")
                         st.caption("⚠️ 若任一条件不满足，放弃买入")
             save_today_predictions(normal_results, demon_results, defense_results, safe_dates)
+
         # 展示轨道结果
         st.subheader("🛡️ 轨道一：缩量潜伏池")
         for i, item in enumerate(normal_results,1):
@@ -1274,6 +1397,7 @@ if run_market_scan or run_watchlist:
             with st.expander(f"[{i}] {item['row']['name']} 涨幅{item['row']['pct_chg']:.1f}%"):
                 st.markdown(item['final'])
 
+    # ========== 自选股深度诊断 ==========
     if run_watchlist:
         symbols = [s.strip() for s in re.split(r'[,\n\s]+', watchlist_input) if s.strip()]
         w_df = get_tickflow_data_for_symbols(tf, symbols)
@@ -1289,7 +1413,16 @@ if run_market_scan or run_watchlist:
             for item in watchlist_results:
                 with st.expander(f"{item['row']['name']}"):
                     st.markdown(item['final'])
-
+            st.divider()
+            html_data = export_to_html_report([], [], [], watchlist_results, market_context, safe_dates)
+            if html_data:
+                st.session_state.html_report_data = html_data
+                st.session_state.html_report_filename = f"自选股诊断_{safe_dates['now_str']}.html"
+                st.info("✅ 报告已生成，请滑动到页面最底部点击下载按钮。")
+        else:
+            st.warning("⚠️ 未获取到有效自选股数据，请检查代码输入是否正确")
+            
+# ========== 尾盘狙击（独立功能） ==========
 if run_tail:
     tail_df = tail_sniper_scan()
     if not tail_df.empty:
@@ -1315,5 +1448,17 @@ if run_tail:
     else:
         st.info("无尾盘目标")
 
+# ================= 📥 全局下载按钮 =================
 st.divider()
-st.caption("💡 运行扫描后，下载按钮将出现（此版本简化了报告下载，如需恢复请自行添加）")
+if st.session_state.get("html_report_data"):
+    st.subheader("📥 下载报告")
+    # 🔧 FIX-7: 删除 type="primary"（st.download_button 不支持该参数，会 TypeError）
+    st.download_button(
+        label=f"💾 点击下载: {st.session_state.html_report_filename}",
+        data=st.session_state.html_report_data,
+        file_name=st.session_state.html_report_filename,
+        mime="text/html",
+        use_container_width=True
+    )
+else:
+    st.caption("💡 提示：运行全市场扫描或自选股诊断后，这里会出现 HTML 报告下载按钮。")
