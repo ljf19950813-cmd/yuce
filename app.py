@@ -1341,7 +1341,7 @@ def ai_trade_review(stock_record, sell_price):
         return resp.choices[0].message.content
     except: return "审查失败"
 
-# ================= 侧边栏（必须在使用按钮之前定义） =================
+# ================= 侧边栏 =================
 with st.sidebar:
     st.header("⚙️ 参数")
     top_n_normal = st.slider("🛡️ 缩量轨 TOP N", 1, 20, CONFIG["TOP_N_NORMAL"])
@@ -1363,10 +1363,18 @@ with st.sidebar:
         run_tail = False
         st.caption("尾盘狙击仅在 14:30-15:00 可用")
     st.divider()
-    run_market_scan = st.button("🚀 全市场四轨扫描", type="primary", use_container_width=True)
+
+    # 全市场扫描按钮 → 启动流程
+    if st.button("🚀 全市场四轨扫描", type="primary", use_container_width=True):
+        st.session_state.scan_phase = "sell"      # 标记进入卖出确认阶段
+        st.session_state.scan_top_n_normal = top_n_normal
+        st.session_state.scan_top_n_demon = top_n_demon
+        st.rerun()
+
+    # 自选股诊断按钮保持独立，不触发流程
     run_watchlist = st.button("👁️ 自选股深度诊断", type="secondary", use_container_width=True)
     st.caption("💡 盘后务必查看「明日竞价确认表」，明早若条件不达标，请放弃买入！")
-    
+
 # ================= 自选股深度诊断（独立，不触发持仓流程） =================
 if run_watchlist:
     if not tf or not llm_client: st.error("客户端未初始化"); st.stop()
@@ -1392,7 +1400,6 @@ if run_watchlist:
         for item in watchlist_results:
             with st.expander(f"{item['row']['name']}"):
                 st.markdown(item['final'])
-        # HTML报告
         st.divider()
         html_data = export_to_html_report([], [], [], watchlist_results, market_context, safe_dates)
         if html_data:
@@ -1402,32 +1409,40 @@ if run_watchlist:
     else:
         st.warning("⚠️ 未获取到有效自选股数据")
 
-# ================= 全市场四轨扫描（含持仓确认 → 买入确认 → 扫描） =================
-if run_market_scan:
-    if not tf or not llm_client: st.error("客户端未初始化"); st.stop()
+# ================= 全市场扫描流程（基于会话阶段） =================
+scan_phase = st.session_state.get("scan_phase", None)
 
-    # ----- 阶段1：持仓卖出确认（若有持仓） -----
+if scan_phase == "sell":
+    # ----- 阶段1：持仓卖出确认 -----
     portfolio_df = load_portfolio()
-    if not portfolio_df.empty:
-        st.subheader("📌 持仓卖出确认")
-        st.warning(f"您目前持有 {len(portfolio_df)} 只股票，请确认是否卖出：")
-        with st.form("sell_form"):
-            sell_records = []
-            for _, holding in portfolio_df.iterrows():
-                col1, col2 = st.columns([1, 3])
-                sell = col1.checkbox(f"卖出 {holding['名称']}({holding['代码']})", key=f"sell_{holding['代码']}")
-                price = col2.number_input("卖出价", value=float(holding['买入价']), step=0.01, key=f"sell_price_{holding['代码']}")
-                if sell:
-                    sell_records.append((holding, price))
-            submitted = st.form_submit_button("确认卖出")
-            if submitted:
-                for holding, price in sell_records:
-                    record_sell_and_review(holding, price, safe_dates['today'])
-                st.success("卖出记录已更新")
-                st.rerun()   # 刷新页面，如果还有持仓则继续卖出，否则进入买入阶段
-        st.stop()   # 如果显示了卖出表单，就不再继续执行后续扫描
-    # 如果没有持仓或已处理完卖出，则继续
+    if portfolio_df is None or portfolio_df.empty:
+        # 没有持仓，直接跳到买入阶段
+        st.session_state.scan_phase = "buy"
+        st.rerun()
 
+    st.subheader("📌 持仓卖出确认")
+    st.warning(f"您目前持有 {len(portfolio_df)} 只股票，请确认是否卖出：")
+    with st.form("sell_form"):
+        sell_records = []
+        for _, holding in portfolio_df.iterrows():
+            col1, col2 = st.columns([1, 3])
+            sell = col1.checkbox(f"卖出 {holding['名称']}({holding['代码']})", key=f"sell_{holding['代码']}")
+            price = col2.number_input("卖出价", value=float(holding['买入价']), step=0.01, key=f"sell_price_{holding['代码']}")
+            if sell:
+                sell_records.append((holding, price))
+        if st.form_submit_button("确认卖出"):
+            for holding, price in sell_records:
+                record_sell_and_review(holding, price, safe_dates['today'])
+            st.success("卖出记录已更新")
+            # 卖出后仍停留在卖出阶段，直到所有持仓都处理完（用户可再次提交）
+            st.rerun()
+
+    # 提供“跳过卖出，直接下一步”的按钮，避免死循环
+    if st.button("无持仓需卖出，进入买入确认"):
+        st.session_state.scan_phase = "buy"
+        st.rerun()
+
+elif scan_phase == "buy":
     # ----- 阶段2：昨日推荐买入确认 -----
     st.subheader("📥 昨日推荐买入确认")
     try:
@@ -1437,13 +1452,21 @@ if run_market_scan:
         df_hist = pd.DataFrame(data)
         if df_hist.empty:
             st.info("暂无历史推荐记录")
+            # 没有推荐，直接进入扫描阶段
+            if st.button("直接进入扫描"):
+                st.session_state.scan_phase = "scan"
+                st.rerun()
         else:
-            # 自适应日期列
             date_col = next((col for col in df_hist.columns if '日' in str(col)), df_hist.columns[0])
             yesterday_str = safe_dates['yesterday']
             mask = df_hist[date_col].astype(str).str.strip() == str(yesterday_str)
             yesterday_recs = df_hist[mask]
-            if not yesterday_recs.empty:
+            if yesterday_recs.empty:
+                st.info(f"昨日({yesterday_str})无推荐记录")
+                if st.button("直接进入扫描"):
+                    st.session_state.scan_phase = "scan"
+                    st.rerun()
+            else:
                 with st.form("buy_form"):
                     buy_records = []
                     for _, rec in yesterday_recs.iterrows():
@@ -1459,20 +1482,29 @@ if run_market_scan:
                         buy_price = col2.number_input("实际买入价", value=ai_buy, step=0.01, key=f"buy_price_{code}")
                         if bought:
                             buy_records.append((rec, buy_price))
-                    submitted = st.form_submit_button("确认买入")
-                    if submitted:
+                    if st.form_submit_button("确认买入"):
                         for rec, price in buy_records:
                             save_new_buy(rec.to_dict(), rec.get('策略赛道', ''), price, safe_dates['today'])
                         st.success("买入记录已保存")
-                        st.rerun()   # 刷新后进入扫描阶段
-                st.stop()   # 显示了买入表单，就不再执行后续扫描
-            else:
-                st.info(f"昨日({yesterday_str})无推荐记录")
+                        st.session_state.scan_phase = "scan"
+                        st.rerun()
+                # 如果用户不想买入，也可直接进入扫描
+                if st.button("跳过买入，直接开始扫描"):
+                    st.session_state.scan_phase = "scan"
+                    st.rerun()
     except Exception as e:
         st.caption(f"无法加载昨日推荐: {e}")
+
+elif scan_phase == "scan":
+    # ----- 阶段3：全市场扫描 -----
+    if not tf or not llm_client:
+        st.error("客户端未初始化")
         st.stop()
 
-    # ----- 阶段3：全市场扫描（只有前两个阶段都完成后才会执行） -----
+    # 应用侧边栏滑块的数值
+    CONFIG["TOP_N_NORMAL"] = st.session_state.get("scan_top_n_normal", CONFIG["TOP_N_NORMAL"])
+    CONFIG["TOP_N_DEMON"] = st.session_state.get("scan_top_n_demon", CONFIG["TOP_N_DEMON"])
+
     with st.spinner("获取日线数据..."):
         df, market_avg_pct = get_data_tickflow()
         if df is None: st.error("数据获取失败"); st.stop()
@@ -1563,6 +1595,11 @@ if run_market_scan:
     for i, item in enumerate(defense_results,1):
         with st.expander(f"[{i}] {item['row']['name']} 涨幅{item['row']['pct_chg']:.1f}%"):
             st.markdown(item['final'])
+
+    # 扫描完成，清除阶段状态，回到初始界面
+    if st.button("返回主界面"):
+        st.session_state.scan_phase = None
+        st.rerun()
             
 # ========== 尾盘狙击（独立功能） ==========
 if run_tail:
