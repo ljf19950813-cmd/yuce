@@ -164,6 +164,33 @@ def financial_blacklist_filter(df):
         st.warning(f"财务过滤异常: {e}")
         return df
 
+def filter_recent_surge(df, days=5, max_pct=30):
+    """
+    剔除近 days 个交易日累计涨幅超过 max_pct% 的股票。
+    需要 df 包含 'tf_code' 列，利用日K线计算。
+    """
+    if df is None or df.empty:
+        return df
+    keep = []
+    for _, row in df.iterrows():
+        try:
+            k = tf.klines.get(row['tf_code'], period='1d', count=days+1, as_dataframe=True)
+            if k is not None and len(k) >= days+1:
+                # 计算近days日累计涨幅（不含当日）
+                start_close = float(k.iloc[-(days+1)]['close'])
+                end_close = float(k.iloc[-2]['close'])   # 昨日收盘
+                if start_close > 0:
+                    pct = (end_close - start_close) / start_close * 100
+                    if pct > max_pct:
+                        continue  # 剔除
+            keep.append(row)
+        except:
+            keep.append(row)   # 数据异常时保留，避免误杀
+    result = pd.DataFrame(keep)
+    if len(result) < len(df):
+        st.caption(f"🚫 近{days}日涨幅>{max_pct}%剔除 {len(df)-len(result)} 只")
+    return result
+    
 # ================= 3. 数据获取与清洗 =================
 def get_data_tickflow():
     if not tf: return None, 0.0
@@ -597,19 +624,41 @@ def get_minute_features(tf_client, tf_codes):
 
 # ================= 8. 竞价确认清单生成 =================
 def generate_auction_checklist(stock_dict, analysis_text):
-    code = stock_dict['code']; name = stock_dict['name']
+    code = stock_dict['code']
+    name = stock_dict['name']
+    close_price = stock_dict['close']
     conditions = []
+
+    # 1. 竞价量能条件（保持不变）
     yesterday_vol = stock_dict.get('volume', 0)
     min_auction_vol = round(yesterday_vol * 0.03) if yesterday_vol > 0 else 0
     if min_auction_vol > 0:
         conditions.append(f"竞价成交量 ≥ {min_auction_vol}手")
+
+    # 2. 从【三档买点】中提取高开价格（精确解析）
     try:
-        high_match = re.search(r'高开.*?(\d+\.\d+)', analysis_text)
-        if high_match:
-            high_price = float(high_match.group(1))
-            conditions.append(f"高开幅度不超过 {high_price:.2f}元 (涨幅{((high_price/stock_dict['close'])-1)*100:.1f}%)")
-    except: pass
-    conditions.append(f"低开幅度不超过3% (低于{stock_dict['close']*0.97:.2f})，否则放弃买入")
+        # 定位“【三档买点】”区块
+        block_match = re.search(r'【三档买点】\s*\n(.*?)(?=\n\s*\n|\Z)', analysis_text, re.DOTALL)
+        if block_match:
+            block = block_match.group(1)
+            # 提取“- 高开2%以上：XX.XX 元”或类似格式
+            high_line = re.search(r'高开.*?[：:]\s*(\d+\.\d+)', block)
+            if high_line:
+                high_price = float(high_line.group(1))
+                # 合理性校验：买点应在当前价的 98%~115% 之间（高开买点一般高于收盘）
+                if close_price * 0.98 <= high_price <= close_price * 1.15:
+                    pct = (high_price / close_price - 1) * 100
+                    conditions.append(
+                        f"高开买入价 {high_price:.2f} 元（对应涨幅 ≥{pct:.1f}%），"
+                        f"若开盘价超过此价位 2% 则放弃追高"
+                    )
+    except:
+        pass   # 提取失败则忽略，不影响其他条件
+
+    # 3. 低开限制（硬条件）
+    low_limit = round(close_price * 0.97, 2)
+    conditions.append(f"低开幅度不超过3% (不低于{low_limit}元)，否则放弃所有买入计划")
+
     return {'code': code, 'name': name, 'conditions': conditions, 'active': True}
 
 # ================= 9. 价格提取与评级 =================
@@ -1152,12 +1201,14 @@ if run_market_scan or run_watchlist:
     if run_market_scan:
         normal_df = filter_normal_stocks(df)
         normal_df = financial_blacklist_filter(normal_df)
+        normal_df = filter_recent_surge(normal_df, days=5, max_pct=25)
         if not normal_df.empty:
             normal_df = calculate_real_vol_ratio(normal_df)
             normal_df = normal_df[normal_df['vol_ratio'] <= 1.2].head(CONFIG['TOP_N_NORMAL'])
         # 轨道二：妖股
         demon_df = filter_demon_stocks(df)
         demon_df = financial_blacklist_filter(demon_df)  # 仅财务底线排雷
+        demon_df = filter_recent_surge(demon_df, days=3, max_pct=40)
         if not demon_df.empty:
             demon_df = calculate_real_vol_ratio(demon_df).head(CONFIG['TOP_N_DEMON']) 
     # 这里不再根据量比过滤，但筹码断层会体现在vol_ratio=99上，妖股可以忽略99，也可保留为提醒
@@ -1165,6 +1216,7 @@ if run_market_scan or run_watchlist:
         if market_ratio < 1.0 or market_avg_pct < 0.0:
             defense_df = filter_defense_stocks(df, tf, market_avg_pct)
             defense_df = financial_blacklist_filter(defense_df)
+            defense_df = filter_recent_surge(defense_df, days=5, max_pct=20)
             if not defense_df.empty:
                 defense_df = calculate_real_vol_ratio(defense_df)
                 defense_df = defense_df[defense_df['vol_ratio'] <= 2.5].head(CONFIG['TOP_N_DEFENSE'])
