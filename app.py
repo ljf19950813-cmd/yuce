@@ -717,9 +717,12 @@ def save_today_predictions(normal_res, demon_res, defense_res, safe_dates):
             conditions = generate_auction_checklist(row, final_text)
             conditions_str = " | ".join(conditions['conditions'])
             all_results.append([
-                safe_dates['today'], row['name'], row['code'], track_name,
+                safe_dates['today'],
+                row['name'],
+                "'" + str(row['code']),          # ← 加单引号
+                track_name,
                 round(close_price,2), round(buy_price,2), round(stop_price,2), rating,
-                final_text, None,None,None, "待验尸",conditions_str 
+                final_text, None,None,None, "待验尸", conditions_str
             ])
     if all_results:
         try:
@@ -800,7 +803,7 @@ def run_autopsy(safe_dates):
         except: return
         update_count = 0
         for idx, row in pending.iterrows():
-            code = str(row['代码']).strip()
+            code = str(row['代码']).strip().replace("'", "").replace(" ", "")
             real_row = real_data[real_data['code'].astype(str).str.strip() == code]
             if real_row.empty: continue
             real = real_row.iloc[0]
@@ -1331,7 +1334,7 @@ if run_tail:
             tail_save_data.append([
                 safe_dates['today'],
                 row['name'],
-                row['symbol'].split('.')[0],
+                "'" + row['symbol'].split('.')[0],
                 round(row['price'], 2),
                 buy_price,
                 stop_price,
