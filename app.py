@@ -1425,20 +1425,19 @@ if scan_phase == "sell":
 
     st.subheader("📌 持仓卖出确认")
     st.warning(f"您目前持有 {len(portfolio_df)} 只股票，请确认是否卖出：")
-    with st.form("sell_form"):
-        sell_records = []
-        for _, holding in portfolio_df.iterrows():
-            col1, col2 = st.columns([1, 3])
-            sell = col1.checkbox(f"卖出 {holding['名称']}({holding['代码']})", key=f"sell_{holding['代码']}")
-            price = col2.number_input("卖出价", value=float(holding['买入价']), step=0.01, key=f"sell_price_{holding['代码']}")
-            if sell:
-                sell_records.append((holding, price))
-        if st.form_submit_button("确认卖出"):
-            for holding, price in sell_records:
-                record_sell_and_review(holding, price, safe_dates['today'])
-            st.success("卖出记录已更新")
-            # 卖出后仍停留在卖出阶段，直到所有持仓都处理完（用户可再次提交）
-            st.rerun()
+        with st.form(key="sell_form"):
+            sell_records = []
+            for _, holding in portfolio_df.iterrows():
+                col1, col2 = st.columns([1, 3])
+                sell = col1.checkbox(f"卖出 {holding['名称']}({holding['代码']})", key=f"sell_{holding['代码']}")
+                price = col2.number_input("卖出价", value=float(holding['买入价']), step=0.01, key=f"sell_price_{holding['代码']}")
+                if sell:
+                    sell_records.append((holding, price))
+            if st.form_submit_button("确认卖出", key="submit_sell"):
+                for holding, price in sell_records:
+                    record_sell_and_review(holding, price, safe_dates['today'])
+                st.success("卖出记录已更新")
+                st.rerun()
 
     # 提供“跳过卖出，直接下一步”的按钮，避免死循环
     if st.button("无持仓需卖出，进入买入确认"):
@@ -1470,7 +1469,7 @@ elif scan_phase == "buy":
                     st.session_state.scan_phase = "scan"
                     st.rerun()
             else:
-                with st.form("buy_form"):
+                with st.form(key="buy_form"):
                     buy_records = []
                     for _, rec in yesterday_recs.iterrows():
                         name = rec.get('名称', '未知')
@@ -1486,12 +1485,12 @@ elif scan_phase == "buy":
                         quantity = col3.number_input("买入股数", value=100, step=100, key=f"qty_{code}")
                         if bought:
                             buy_records.append((rec, buy_price, quantity))
-                        if st.form_submit_button("确认买入"):
-                            for rec, price, qty in buy_records:
-                                save_new_buy(rec.to_dict(), rec.get('策略赛道', ''), price, qty, safe_dates['today'])
-                            st.success("买入记录已保存")
-                            st.session_state.scan_phase = "scan"
-                            st.rerun()
+                    if st.form_submit_button("确认买入", key="submit_buy"):
+                        for rec, price, qty in buy_records:
+                            save_new_buy(rec.to_dict(), rec.get('策略赛道', ''), price, qty, safe_dates['today'])
+                        st.success("买入记录已保存")
+                        st.session_state.scan_phase = "scan"
+                        st.rerun()
                 # 如果用户不想买入，也可直接进入扫描
                 if st.button("跳过买入，直接开始扫描"):
                     st.session_state.scan_phase = "scan"
