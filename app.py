@@ -200,7 +200,7 @@ def get_data_tickflow():
         if df is None or df.empty: return None, 0.0
 
         df['tf_code'] = df['symbol'].astype(str)
-        df['code'] = df['tf_code'].str.split('.').str[0]
+        df['code'] = df['tf_code'].str.split('.').str[0].str.zfill(6)
         df['name'] = df['ext.name'].astype(str) if 'ext.name' in df.columns else '未知'
 
         def safe_col(col_name, default=0.0):
@@ -631,7 +631,7 @@ def generate_auction_checklist(stock_dict, analysis_text):
 
     # 1. 竞价量能条件（保持不变）
     yesterday_vol = stock_dict.get('volume', 0)
-    min_auction_vol = round(yesterday_vol * 0.03) if yesterday_vol > 0 else 0
+    min_auction_vol = round(yesterday_vol * 0.015) if yesterday_vol > 0 else 0
     if min_auction_vol > 0:
         conditions.append(f"竞价成交量 ≥ {min_auction_vol}手")
 
@@ -944,10 +944,15 @@ def get_tickflow_data_for_symbols_offset(tf_client, symbols_list, offset_days=2)
             open_p = float(target.get('open', target.get('open_price', close)))
             high = float(target.get('high', target.get('high_price', close)))
             low = float(target.get('low', target.get('low_price', close)))
+            if close > 1000:
+                close /= 100.0
+                open_p /= 100.0
+                high /= 100.0
+                low /= 100.0
             amount = float(target.get('amount', 0))
             vol = float(target.get('volume', 0))
             rows.append({
-                'code': tf_code.split('.')[0],
+                'code': tf_code.split('.')[0].zfill(6)
                 'open': open_p, 'high': high, 'low': low, 'close': close,
                 'amount': amount, 'volume': vol
             })
@@ -1378,6 +1383,22 @@ with st.sidebar:
     run_watchlist = st.button("👁️ 自选股深度诊断", type="secondary", use_container_width=True)
     st.caption("💡 盘后务必查看「明日竞价确认表」，明早若条件不达标，请放弃买入！")
 
+if st.button("修复历史股票代码"):
+    # 修复 Sheet1
+    sh = gc.open_by_url(spreadsheet_url)
+    ws = sh.worksheet(SHEET_NAME)
+    codes = ws.col_values(3)[1:]  # 假设代码在第三列
+    for i, code in enumerate(codes, start=2):
+        new_code = str(code).replace("'","").zfill(6)
+        ws.update_cell(i, 3, f"'{new_code}")
+    # 修复 Tail_Snipe
+    ws2 = sh.worksheet("Tail_Snipe")
+    codes2 = ws2.col_values(3)[1:]
+    for i, code in enumerate(codes2, start=2):
+        new_code = str(code).replace("'","").zfill(6)
+        ws2.update_cell(i, 3, f"'{new_code}")
+    st.success("历史代码已修复")
+    
 # ================= 自选股深度诊断（独立，不触发持仓流程） =================
 if run_watchlist:
     if not tf or not llm_client: st.error("客户端未初始化"); st.stop()
@@ -1389,28 +1410,70 @@ if run_watchlist:
     st.text(market_context)
 
     symbols = [s.strip() for s in re.split(r'[,\n\s]+', watchlist_input) if s.strip()]
+    if not symbols:
+        st.warning("请至少输入一个股票代码")
+        st.stop()
+
+    st.info(f"正在获取 {len(symbols)} 只自选股的基本数据...")
     w_df = get_tickflow_data_for_symbols(tf, symbols)
+    if w_df.empty:
+        st.warning("⚠️ 未获取到有效自选股数据，请检查代码是否正确")
+        st.stop()
+
+    st.info("正在进行财务排雷...")
     w_df = financial_blacklist_filter(w_df)
+    if w_df.empty:
+        st.warning("⚠️ 所有自选股均未通过财务排雷（每股净资产<1）")
+        st.stop()
+
+    st.info("正在计算量比与筹码警告...")
+    w_df = calculate_real_vol_ratio(w_df)
+
     watchlist_results = []
-    if not w_df.empty:
-        w_df = calculate_real_vol_ratio(w_df)
-        for _, row in w_df.iterrows():
+    total = len(w_df)
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+
+    for idx, (_, row) in enumerate(w_df.iterrows()):
+        code = row.get('code', '')
+        name = row.get('name', '')
+        status_text.text(f"正在分析 {name}({code}) ... ({idx+1}/{total})")
+        try:
             history = get_history_context(tf, row['tf_code'])
             reasoning, final = analyze_with_llm(row.to_dict(), '', market_context, history, "watchlist")
-            watchlist_results.append({'row':row,'reasoning':reasoning,'final':final})
-            time.sleep(1)
-        st.subheader("🚑 自选股诊断")
-        for item in watchlist_results:
-            with st.expander(f"{item['row']['name']}"):
+            watchlist_results.append({'row': row, 'reasoning': reasoning, 'final': final})
+        except Exception as e:
+            st.warning(f"分析 {name}({code}) 失败: {e}")
+            # 即使失败也添加一个空结果，以保持计数
+            watchlist_results.append({'row': row, 'reasoning': '', 'final': f'分析失败: {e}'})
+        progress_bar.progress((idx + 1) / total)
+        time.sleep(0.5)   # 避免API限流
+
+    progress_bar.empty()
+    status_text.empty()
+
+    if not watchlist_results:
+        st.warning("⚠️ 所有自选股分析均失败，请稍后重试")
+        st.stop()
+
+    st.subheader("🚑 自选股诊断")
+    for item in watchlist_results:
+        with st.expander(f"{item['row']['name']} ({item['row']['code']})"):
+            if item['final']:
                 st.markdown(item['final'])
-        st.divider()
+            else:
+                st.info("该股分析无输出，请检查日志")
+
+    # HTML报告
+    st.divider()
+    with st.spinner("正在生成诊断报告..."):
         html_data = export_to_html_report([], [], [], watchlist_results, market_context, safe_dates)
         if html_data:
             st.session_state.html_report_data = html_data
             st.session_state.html_report_filename = f"自选股诊断_{safe_dates['now_str']}.html"
-            st.info("✅ 报告已生成，请滑动到页面最底部点击下载按钮。")
-    else:
-        st.warning("⚠️ 未获取到有效自选股数据")
+            st.success("✅ 诊断报告已生成，可滑动至底部下载")
+        else:
+            st.warning("报告生成失败，但诊断结果仍可查看")
 
 # ================= 全市场扫描流程（基于会话阶段） =================
 scan_phase = st.session_state.get("scan_phase", None)
