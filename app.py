@@ -509,6 +509,7 @@ STRUCTURED_OUTPUT_SUFFIX = """
 - 高开2%以上：XX.XX 元
 - 平开±1%：XX.XX 元
 - 低开2%以上：XX.XX 元
+6. 在输出最终答案之前，请先在「✅ 逻辑自检」段落列出：买点、止损、仓位、信心、时间止损，并确认它们之间无矛盾，且计算过程基于给定数据。本段落仅用于自检，不计入最终报告。
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"""
 
 PROMPT_NORMAL = f"""你是A股15年实战游资，精通"缩量洗盘反包"与"反量化埋伏"。
@@ -695,6 +696,20 @@ def extract_rating_from_text(final_text):
     section_match = re.search(r'评级.*?([SABC])', final_text)
     return section_match.group(1) if section_match else "未评级"
 
+def validate_prediction(final_text, close_price):
+    """硬校验：买点、止损是否在合理范围内"""
+    buy = extract_price_from_text(final_text, close_price, "buy")
+    stop = extract_price_from_text(final_text, close_price, "stop")
+    if buy <= 0 or stop <= 0:
+        return False
+    if not (close_price * 0.85 <= buy <= close_price * 1.15):
+        return False
+    if not (close_price * 0.85 <= stop <= close_price * 1.15):
+        return False
+    if stop >= buy:  # 止损必须低于买点
+        return False
+    return True
+    
 def save_today_predictions(normal_res, demon_res, defense_res, safe_dates):
     if not gc or not spreadsheet_url: return
     try:
@@ -716,6 +731,10 @@ def save_today_predictions(normal_res, demon_res, defense_res, safe_dates):
             rating = extract_rating_from_text(final_text)
             conditions = generate_auction_checklist(row, final_text)
             conditions_str = " | ".join(conditions['conditions'])
+            if not validate_prediction(final_text, close_price):
+                st.caption(f"⚠️ {row['name']}({row['code']}) 买点/止损不合理，已跳过保存")
+                continue
+
             all_results.append([
                 safe_dates['today'],
                 row['name'],
@@ -793,18 +812,17 @@ def run_autopsy(safe_dates):
         pending = df_history[df_history['验尸结果'] == '待验尸'].copy()
         if pending.empty: return
 
-# 🔧 关键：先清洗代码列（去引号、空格，补全6位）
-        pending['代码'] = pending['代码'].apply(
-            lambda x: str(x).replace("'", "").strip().zfill(6)
-        )
-
         if '日期' in pending.columns:
-            t_minus_2 = safe_dates['day_before']
+            # 获取T-2日期
+            t_minus_2 = safe_dates['day_before']  # 已经是T-2
             pending = pending[pending['日期'].astype(str) <= t_minus_2]
             if pending.empty:
                 st.info("暂无T+2日可验尸的记录")
                 return
 
+        st.info(f"🔍 检测到 {len(pending)} 条可验尸记录（T+2日），开始模拟卖出...")
+
+        # 需要获取T+1和T+2两天的行情
         symbols_to_check = pending['代码'].unique().tolist()
         if not tf: return
 
@@ -835,7 +853,7 @@ def run_autopsy(safe_dates):
 
         update_count = 0
         for idx, row in pending.iterrows():
-            code = str(row['代码']).replace("'", "").strip().zfill(6)
+            code = str(row['代码']).strip().replace("'", "").replace(" ", "")
             # 获取T+1行情
             t1_row = t1_data[t1_data['code'].astype(str).str.strip() == code]
             if t1_row.empty: continue
@@ -851,12 +869,7 @@ def run_autopsy(safe_dates):
             t2_low = t2['low']
             t2_close = t2['close']
             # 计算T+2日均价（可用amount/volume或近似均价）
-            try:
-                t2_avg = t2['amount'] / t2['volume'] if t2['volume'] > 0 else (t2_high + t2_low + t2_close) / 3
-            except:
-                t2_avg = (t2_high + t2_low + t2_close) / 3
-
-            # 选择模拟卖出价：这里用开盘价，也可改成均价
+            t2_avg = (t2_high + t2_low + t2_close) / 3
             sell_price = t2_avg
 
             # 获取买入价
@@ -940,7 +953,6 @@ def get_tickflow_data_for_symbols_offset(tf_client, symbols_list, offset_days=2)
             if k is None or len(k) < offset_days+1: continue
             # 取倒数第 offset_days 根（从0开始）
             target = k.iloc[-offset_days-1] if offset_days > 0 else k.iloc[-1]
-            prev = k.iloc[-offset_days-2] if len(k) > offset_days+1 else target
             close = float(target.get('close', target.get('last_price')))
             open_p = float(target.get('open', target.get('open_price', close)))
             high = float(target.get('high', target.get('high_price', close)))
@@ -1078,7 +1090,7 @@ def export_to_html_report(normal_results, demon_results, defense_results, watchl
     </style>
     """
     html_parts = [f"<!DOCTYPE html><html lang='zh-CN'><head><meta charset='UTF-8'><title>四轨制猎手复盘报告</title>{css_style}</head><body>"]
-    html_parts.append(f"<div class='header'><h1>👑 四轨制猎手实战报告 (V27.3)</h1><p>生成时间: {safe_dates['now_str']} | 基准日(T日): {safe_dates['today']}</p></div>")
+    html_parts.append(f"<div class='header'><h1>👑 四轨制猎手实战报告 (V27.5)</h1><p>生成时间: {safe_dates['now_str']} | 基准日(T日): {safe_dates['today']}</p></div>")
     html_parts.append("<h2>🌍 今日大盘与情绪环境</h2>")
     html_parts.append(f"<div class='market-box'>{market_context}</div>")
     
@@ -1220,8 +1232,6 @@ def tail_sniper_scan():
         progress_bar.progress((idx + 1) / total)
 
     progress_bar.empty()
-
-    # 🧪 打印通过各阶段的股票数量
 
     return pd.DataFrame(candidates)
 
