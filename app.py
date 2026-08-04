@@ -793,17 +793,18 @@ def run_autopsy(safe_dates):
         pending = df_history[df_history['验尸结果'] == '待验尸'].copy()
         if pending.empty: return
 
+# 🔧 关键：先清洗代码列（去引号、空格，补全6位）
+        pending['代码'] = pending['代码'].apply(
+            lambda x: str(x).replace("'", "").strip().zfill(6)
+        )
+
         if '日期' in pending.columns:
-            # 获取T-2日期
-            t_minus_2 = safe_dates['day_before']  # 已经是T-2
+            t_minus_2 = safe_dates['day_before']
             pending = pending[pending['日期'].astype(str) <= t_minus_2]
             if pending.empty:
                 st.info("暂无T+2日可验尸的记录")
                 return
 
-        st.info(f"🔍 检测到 {len(pending)} 条可验尸记录（T+2日），开始模拟卖出...")
-
-        # 需要获取T+1和T+2两天的行情
         symbols_to_check = pending['代码'].unique().tolist()
         if not tf: return
 
@@ -834,7 +835,7 @@ def run_autopsy(safe_dates):
 
         update_count = 0
         for idx, row in pending.iterrows():
-            code = str(row['代码']).strip().replace("'", "").replace(" ", "")
+            code = str(row['代码']).replace("'", "").strip().zfill(6)
             # 获取T+1行情
             t1_row = t1_data[t1_data['code'].astype(str).str.strip() == code]
             if t1_row.empty: continue
