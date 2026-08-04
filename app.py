@@ -952,7 +952,7 @@ def get_tickflow_data_for_symbols_offset(tf_client, symbols_list, offset_days=2)
             amount = float(target.get('amount', 0))
             vol = float(target.get('volume', 0))
             rows.append({
-                'code': tf_code.split('.')[0].zfill(6)
+                'code': tf_code.split('.')[0].zfill(6),
                 'open': open_p, 'high': high, 'low': low, 'close': close,
                 'amount': amount, 'volume': vol
             })
