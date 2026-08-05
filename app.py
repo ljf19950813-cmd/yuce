@@ -165,44 +165,32 @@ def financial_blacklist_filter(df):
         return df
 
 def load_hot_topics():
-    """从 Hot_Topics 工作表读取最近一次更新的热点主题（未确认的）"""
+    """从 Hot_Topics 工作表读取最近一次更新的热点主题（未确认的）—— 使用缓存"""
     if not gc or not spreadsheet_url:
         return []
     try:
-        sh = gc.open_by_url(spreadsheet_url)
-        try:
-            ws = sh.worksheet("Hot_Topics")
-        except gspread.exceptions.WorksheetNotFound:
-            return []
-
-        data = ws.get_all_records()
+        data = st.session_state.get("hot_topics_data", [])
         if not data:
             return []
-
         df = pd.DataFrame(data)
-        # 自动检测包含“日期”或“时间”的列作为更新时间列
-        time_col = None
-        confirm_col = None
+
+        # 自动识别时间列和确认列
+        time_col = confirm_col = None
         for col in df.columns:
             if '更新' in str(col) or '时间' in str(col) or '日期' in str(col):
                 time_col = col
             if '确认' in str(col):
                 confirm_col = col
-
         if time_col is None or confirm_col is None:
-            st.warning(f"未找到必要列，实际列名: {list(df.columns)}")
             return []
 
-        # 筛选最新一批未确认的主题
+        # 筛选最新一批且未确认的
         latest_time = df[time_col].max()
         mask = (df[time_col] == latest_time) & (df[confirm_col].astype(str).str.strip() == '否')
         latest_topics = df[mask]
-
         if latest_topics.empty:
-            # 如果没有“否”，尝试显示全部（可能已经确认过）
-            mask2 = (df[time_col] == latest_time)
-            latest_topics = df[mask2]
-
+            # 如果没有未确认的，则返回最新一批全部（供查看）
+            latest_topics = df[df[time_col] == latest_time]
         return latest_topics.to_dict('records')
     except Exception as e:
         st.warning(f"加载热点主题失败: {e}")
@@ -1032,7 +1020,7 @@ def run_autopsy(safe_dates):
 
         if update_count > 0:
             try:
-                df_latest = pd.DataFrame(worksheet.get_all_records())
+                df_latest = pd.DataFrame(st.session_state.get("sheet1_data", []))
                 completed = df_latest[df_latest['验尸结果'] != '待验尸'].tail(20)
                 if len(completed) >= 5:
                     win_count = len(completed[completed['验尸结果'].str.contains('🏆|盈利|✅策略有效', na=False)])
@@ -1415,6 +1403,19 @@ if gc and spreadsheet_url:
         st.warning(f"Sheet1 缓存加载失败: {e}")
 run_autopsy(safe_dates)
 
+    try:
+        if "hot_topics_data" not in st.session_state or st.session_state.get("hot_topics_refresh"):
+            sh = gc.open_by_url(spreadsheet_url)
+            try:
+                ws_hot = sh.worksheet("Hot_Topics")
+                st.session_state.hot_topics_data = ws_hot.get_all_records()
+            except gspread.exceptions.WorksheetNotFound:
+                st.session_state.hot_topics_data = []
+            st.session_state.hot_topics_refresh = False
+    except Exception as e:
+        if "hot_topics_data" not in st.session_state:
+            st.session_state.hot_topics_data = []
+            
 # ================= 持仓管理函数（必须放在主界面之前） =================
 def load_portfolio():
     """从 Portfolio 工作表读取持有中的股票（增强兼容性）"""
@@ -1660,6 +1661,9 @@ with st.sidebar:
         hot_keywords_str = st.text_input("今日热点关键词（手动输入）", value="")
     # 存入 session，供后续扫描使用
     st.session_state.hot_keywords = hot_keywords_str
+    if st.button("🔄 刷新热点数据"):
+        st.session_state.hot_topics_refresh = True
+        st.rerun()
     st.divider()
     st.header("🧬 AI策略进化")
     # 显示当前版本胜率
