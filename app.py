@@ -180,20 +180,17 @@ def load_hot_topics():
             return []
 
         df = pd.DataFrame(data)
-        # 调试：打印实际列名（可观察是否与预期一致）
-        st.caption(f"Hot_Topics 实际列名: {list(df.columns)}")
-
-        # 自动适应可能的中文列名（防止空格、全半角差异）
+        # 自动检测包含“日期”或“时间”的列作为更新时间列
         time_col = None
         confirm_col = None
         for col in df.columns:
-            if '更新' in str(col) and '时间' in str(col):
+            if '更新' in str(col) or '时间' in str(col) or '日期' in str(col):
                 time_col = col
             if '确认' in str(col):
                 confirm_col = col
 
         if time_col is None or confirm_col is None:
-            st.warning(f"未找到必要列(更新时间/是否确认)，请检查表头。实际列名: {list(df.columns)}")
+            st.warning(f"未找到必要列，实际列名: {list(df.columns)}")
             return []
 
         # 筛选最新一批未确认的主题
@@ -202,17 +199,15 @@ def load_hot_topics():
         latest_topics = df[mask]
 
         if latest_topics.empty:
-            # 尝试放宽条件：如果没有“否”，则显示全部未确认（可能全是“是”）
+            # 如果没有“否”，尝试显示全部（可能已经确认过）
             mask2 = (df[time_col] == latest_time)
             latest_topics = df[mask2]
-            if latest_topics.empty:
-                st.caption("Hot_Topics 表中没有符合条件的数据")
 
         return latest_topics.to_dict('records')
     except Exception as e:
         st.warning(f"加载热点主题失败: {e}")
         return []
-
+        
 def add_hotspot_flag(stock_df, confirmed_keywords_str):
     """
     给股票 DataFrame 添加一个 'is_hot' 列，标记是否与热点关键词匹配。
