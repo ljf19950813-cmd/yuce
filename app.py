@@ -1610,27 +1610,33 @@ with st.sidebar:
     st.divider()
     st.header("👁️ 自选股监控")
     watchlist_input = st.text_area("代码", value="600519,000858,300750", height=150)
+    # ========== 今日热点主题（可确认） ==========
     st.divider()
     st.header("🔥 今日热点主题")
     hot_topics = load_hot_topics()
     if hot_topics:
         confirmed_keywords = []
         for t in hot_topics:
-            confirmed = st.checkbox(f"{t['主题']} (热度{t['热度评分']})", key=f"hot_{t['主题']}")
+            topic_name = t.get('主题', '')
+            score = t.get('热度评分', '?')
+            keywords_str = t.get('关键词', '')
+            confirmed = st.checkbox(
+                f"{topic_name} (热度{score})",
+                key=f"hot_topic_{topic_name}"
+            )
             if confirmed:
-                # 将该主题的关键词加入总关键词池
-                kws = t['关键词'].split(',')
-                confirmed_keywords.extend([k.strip() for k in kws])
+                kws = [k.strip() for k in keywords_str.split(',')]
+                confirmed_keywords.extend(kws)
         if confirmed_keywords:
-            hot_keywords_str = ','.join(list(set(confirmed_keywords)))  # 去重
+            hot_keywords_str = ','.join(list(set(confirmed_keywords)))
             st.text_input("已确认热点关键词", value=hot_keywords_str, disabled=True)
         else:
             hot_keywords_str = ""
-            st.text_input("已确认热点关键词", value="", disabled=True)
     else:
-        hot_keywords_str = ""
-        st.text_input("今日热点关键词（手动输入，逗号分隔）", value="", key="manual_hot_keywords")
-        hot_keywords_str = st.session_state.get("manual_hot_keywords", "")
+        hot_keywords_str = st.text_input("今日热点关键词（手动输入）", value="")
+    # 存入 session，供后续扫描使用
+    st.session_state.hot_keywords = hot_keywords_str
+    st.write("调试：读取到的热点数据", hot_topics)
     st.divider()
     st.header("🧬 AI策略进化")
     # 显示当前版本胜率
