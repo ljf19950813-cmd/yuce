@@ -783,6 +783,7 @@ def save_today_predictions(normal_res, demon_res, defense_res, safe_dates):
             st.success(f"已保存 {len(all_results)} 条")
         except Exception as e:
             st.error(f"保存失败: {e}")
+            st.session_state.sheet1_refresh = True
 
 # ================= 10. 智能验尸 =================
 def ai_autopsy_record(analysis_text, t1_data_dict, stock_name, stock_code, mode):
@@ -833,7 +834,7 @@ def run_autopsy(safe_dates):
     try:
         sh = gc.open_by_url(spreadsheet_url)
         worksheet = sh.worksheet(SHEET_NAME)
-        df_history = pd.DataFrame(worksheet.get_all_records())
+        df_history = pd.DataFrame(st.session_state.get("sheet1_data", []))
         if df_history.empty: return
         # 检查必需列
         required_cols = ['验尸结果', '日期', '代码', 'AI建议买点']
@@ -976,6 +977,7 @@ def run_autopsy(safe_dates):
             except Exception as e:
                 logging.warning(f"更新版本胜率失败: {e}")
             st.success(f"💀 T+2验尸完成，更新 {update_count} 条")
+        st.session_state.sheet1_refresh = True  # 下次需要重新读取
         else:
             st.warning("没有记录被更新，请检查T+2数据是否充足")
     except Exception as e:
@@ -1330,6 +1332,18 @@ def save_tail_snipe_results(results_list, safe_date):
 st.title("👑 四轨制猎手 V27.5 (精简版)")
 safe_dates = get_safe_trade_dates()
 st.caption(f"📅 基准日: {safe_dates['today']} | 昨: {safe_dates['yesterday']}")
+# 全局 Sheet1 缓存，避免重复读取
+if gc and spreadsheet_url:
+    try:
+        if "sheet1_data" not in st.session_state or st.session_state.get("sheet1_refresh"):
+            sh = gc.open_by_url(spreadsheet_url)
+            ws = sh.worksheet(SHEET_NAME)
+            st.session_state.sheet1_data = ws.get_all_records()
+            st.session_state.sheet1_refresh = False
+    except Exception as e:
+        if "sheet1_data" not in st.session_state:
+            st.session_state.sheet1_data = []
+        st.warning(f"Sheet1 缓存加载失败: {e}")
 run_autopsy(safe_dates)
 
 # ================= 持仓管理函数（必须放在主界面之前） =================
@@ -1721,13 +1735,10 @@ elif scan_phase == "buy":
     # ----- 阶段2：昨日推荐买入确认 -----
     st.subheader("📥 昨日推荐买入确认")
     try:
-        sh = gc.open_by_url(spreadsheet_url)
-        ws = sh.worksheet(SHEET_NAME)
-        data = ws.get_all_records()
-        df_hist = pd.DataFrame(data)
+        # 使用缓存的 Sheet1 数据，避免额外 API 请求
+        df_hist = pd.DataFrame(st.session_state.get("sheet1_data", []))
         if df_hist.empty:
             st.info("暂无历史推荐记录")
-            # 没有推荐，直接进入扫描阶段
             if st.button("直接进入扫描"):
                 st.session_state.scan_phase = "scan"
                 st.rerun()
@@ -1764,7 +1775,6 @@ elif scan_phase == "buy":
                         st.success("买入记录已保存")
                         st.session_state.scan_phase = "scan"
                         st.rerun()
-                # 如果用户不想买入，也可直接进入扫描
                 if st.button("跳过买入，直接开始扫描"):
                     st.session_state.scan_phase = "scan"
                     st.rerun()
