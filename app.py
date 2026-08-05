@@ -348,7 +348,7 @@ def get_tickflow_data_for_symbols(tf_client, symbols_list):
                     if 0 < amount < 100000: amount *= 10000
             except: pass
             valid_rows.append({
-                'tf_code': tf_code, 'code': tf_code.split('.')[0], 'name': name,
+                'tf_code': tf_code, 'code': tf_code.split('.')[0].zfill(6), 'name': name,
                 'open': open_price, 'close': close_today, 'high': high, 'low': low,
                 'pre_close': close_prev, 'pct_chg': pct, 'turnover': turnover,
                 'amount': amount, 'vol_ratio': vol_ratio,
@@ -763,7 +763,10 @@ def save_today_predictions(normal_res, demon_res, defense_res, safe_dates):
             buy_price = extract_price_from_text(final_text, close_price, "buy")
             stop_price = extract_price_from_text(final_text, close_price, "stop")
             rating = extract_rating_from_text(final_text)
-            conditions = generate_auction_checklist(row, final_text)
+            track = "缩量"
+            if '妖股' in track_name: track = "妖股"
+            elif '逆风' in track_name: track = "逆风"
+            conditions = generate_auction_checklist(row, final_text, track)
             conditions_str = " | ".join(conditions['conditions'])
             if not validate_prediction(final_text, close_price):
                 st.caption(f"⚠️ {row['name']}({row['code']}) 买点/止损不合理，已跳过保存")
@@ -781,9 +784,9 @@ def save_today_predictions(normal_res, demon_res, defense_res, safe_dates):
         try:
             worksheet.append_rows(all_results, value_input_option='USER_ENTERED')
             st.success(f"已保存 {len(all_results)} 条")
+            st.session_state.sheet1_refresh = True
         except Exception as e:
             st.error(f"保存失败: {e}")
-            st.session_state.sheet1_refresh = True
 
 # ================= 10. 智能验尸 =================
 def ai_autopsy_record(analysis_text, t1_data_dict, stock_name, stock_code, mode):
@@ -961,23 +964,21 @@ def run_autopsy(safe_dates):
 
         if update_count > 0:
             try:
-                # 获取最近20条验尸结果（非“待验尸”）
                 df_latest = pd.DataFrame(worksheet.get_all_records())
                 completed = df_latest[df_latest['验尸结果'] != '待验尸'].tail(20)
                 if len(completed) >= 5:
                     win_count = len(completed[completed['验尸结果'].str.contains('🏆|盈利|✅策略有效', na=False)])
                     win_rate = round(win_count / len(completed) * 100, 1)
-                    # 写入 Prompt_History
                     prompt_ws = sh.worksheet(PROMPT_HIST_SHEET) if PROMPT_HIST_SHEET in [ws.title for ws in sh.worksheets()] else sh.add_worksheet(title=PROMPT_HIST_SHEET, rows=100, cols=6)
                     prompt_data = prompt_ws.get_all_values()
                     if len(prompt_data) > 1:
                         last_row = len(prompt_data)
-                        prompt_ws.update_cell(last_row, 5, win_rate)   # 胜率列
-                        prompt_ws.update_cell(last_row, 6, len(completed))  # 交易笔数
+                        prompt_ws.update_cell(last_row, 5, win_rate)
+                        prompt_ws.update_cell(last_row, 6, len(completed))
             except Exception as e:
                 logging.warning(f"更新版本胜率失败: {e}")
             st.success(f"💀 T+2验尸完成，更新 {update_count} 条")
-        st.session_state.sheet1_refresh = True  # 下次需要重新读取
+            st.session_state.sheet1_refresh = True   # ← 正确位置
         else:
             st.warning("没有记录被更新，请检查T+2数据是否充足")
     except Exception as e:
