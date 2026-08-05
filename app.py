@@ -509,7 +509,6 @@ STRUCTURED_OUTPUT_SUFFIX = """
 - 高开2%以上：XX.XX 元
 - 平开±1%：XX.XX 元
 - 低开2%以上：XX.XX 元
-6. 在输出最终答案之前，请先在「✅ 逻辑自检」段落列出：买点、止损、仓位、信心、时间止损，并确认它们之间无矛盾，且计算过程基于给定数据。本段落仅用于自检，不计入最终报告。
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"""
 
 PROMPT_NORMAL = f"""你是A股15年实战游资，精通"缩量洗盘反包"与"反量化埋伏"。
@@ -519,6 +518,13 @@ PROMPT_NORMAL = f"""你是A股15年实战游资，精通"缩量洗盘反包"与"
 ### 2. 量化排雷 (流动性/筹码风险)
 ### 3. T+1买点策略 (分高开/平开/低开三档，展示计算)
 ### 4. 止损位 (价格止损+时间止损，展示计算)
+
+⚠️ 在输出第5段之前，你必须先精简输出一段「✅ 逻辑自检」，核对买点/止损/仓位/信心是否存在矛盾。格式：
+✅ 逻辑自检
+- 买点：XX.XX元，止损：YY.YY元
+- 仓位：X成，信心：X/10
+- 无矛盾 / 存在矛盾（需说明）
+
 ### 5. 猎手评级
 - **评级**：S/A/B/C
 - **仓位**：X成
@@ -533,6 +539,13 @@ PROMPT_DEMON = f"""你是A股15年实战游资，精通"龙头首阴反包"与"�
 ### 2. 死亡换手排雷 (筹码断层/流动性)
 ### 3. T+1买点策略 (高开>3%抢筹/平开半路/低开放弃，展示计算)
 ### 4. 止损位 (价格止损+时间止损，展示计算)
+
+⚠️ 在输出第5段之前，你必须先精简输出一段「✅ 逻辑自检」，核对买点/止损/仓位/信心是否存在矛盾。格式：
+✅ 逻辑自检
+- 买点：XX.XX元，止损：YY.YY元
+- 仓位：X成，信心：X/10
+- 无矛盾 / 存在矛盾（需说明）
+
 ### 5. 猎手评级
 - **评级**：S/A/B/C
 - **仓位**：X成
@@ -547,6 +560,13 @@ PROMPT_DEFENSE = f"""你是精通"弱市逆风突破"的A股猎手。大盘萎�
 ### 2. 筹码健康度 (量能/套牢盘)
 ### 3. T+1买点策略 (高开追/平开伏击/低开低吸，展示计算)
 ### 4. 止损位 (价格止损+时间止损，展示计算)
+
+⚠️ 在输出第5段之前，你必须先精简输出一段「✅ 逻辑自检」，核对买点/止损/仓位/信心是否存在矛盾。格式：
+✅ 逻辑自检
+- 买点：XX.XX元，止损：YY.YY元
+- 仓位：X成，信心：X/10
+- 无矛盾 / 存在矛盾（需说明）
+
 ### 5. 逆风评级
 - **评级**：S/A/B/C
 - **仓位**：X成
@@ -554,13 +574,20 @@ PROMPT_DEFENSE = f"""你是精通"弱市逆风突破"的A股猎手。大盘萎�
 - **时间止损**：X分钟不突破则离场
 - **一句话**：20字内"""
 
-PROMPT_WATCHLIST = f"""你是冷酷的"账户急救操盘手"。客户自选股全部套牢，只讲残酷真相和操作纪律。
+PROMPT_WATCHLIST = f"""你是冷酷的"账户急救操盘手"。客户自选股全部已买入并且被套，只讲残酷真相和操作纪律。
 {ANTI_HALLUCINATION_RULES}
 按以下格式输出：
 ### 1. 套牢诊断 (套牢深度/上方压力/趋势阶段)
 ### 2. 反弹动能 (量价结构/做T空间/破位信号)
 ### 3. 急救决断 (四选一，严禁模棱两可)： 🩸割肉 | 🛌装死 | 🔄做T | 💰补仓
 ### 4. 操作锚点 (做T买卖点/补仓位/清仓破位价，展示计算)
+
+⚠️ 在输出第5段之前，你必须先精简输出一段「✅ 逻辑自检」，核对买点/止损/仓位/信心是否存在矛盾。格式：
+✅ 逻辑自检
+- 买点：XX.XX元，止损：YY.YY元
+- 仓位：X成，信心：X/10
+- 无矛盾 / 存在矛盾（需说明）
+
 ### 5. 猎手评级
 - **评级**：S/A/B/C
 - **仓位**：X成
@@ -624,29 +651,26 @@ def get_minute_features(tf_client, tf_codes):
     return features_map
 
 # ================= 8. 竞价确认清单生成 =================
-def generate_auction_checklist(stock_dict, analysis_text):
+def generate_auction_checklist(stock_dict, analysis_text, track=""):
     code = stock_dict['code']
     name = stock_dict['name']
     close_price = stock_dict['close']
     conditions = []
 
-    # 1. 竞价量能条件（保持不变）
+    # 1. 竞价量能建议（软条件）
     yesterday_vol = stock_dict.get('volume', 0)
     min_auction_vol = round(yesterday_vol * 0.015) if yesterday_vol > 0 else 0
     if min_auction_vol > 0:
-        conditions.append(f"竞价成交量 ≥ {min_auction_vol}手")
+        conditions.append(f"⚠️ 建议竞价成交量 ≥ {min_auction_vol}手（低于此值谨慎追高）")
 
-    # 2. 从【三档买点】中提取高开价格（精确解析）
+    # 2. 高开价格参考（从三档买点中提取）
     try:
-        # 定位“【三档买点】”区块
         block_match = re.search(r'【三档买点】\s*\n(.*?)(?=\n\s*\n|\Z)', analysis_text, re.DOTALL)
         if block_match:
             block = block_match.group(1)
-            # 提取“- 高开2%以上：XX.XX 元”或类似格式
             high_line = re.search(r'高开.*?[：:]\s*(\d+\.\d+)', block)
             if high_line:
                 high_price = float(high_line.group(1))
-                # 合理性校验：买点应在当前价的 98%~115% 之间（高开买点一般高于收盘）
                 if close_price * 0.98 <= high_price <= close_price * 1.15:
                     pct = (high_price / close_price - 1) * 100
                     conditions.append(
@@ -654,11 +678,21 @@ def generate_auction_checklist(stock_dict, analysis_text):
                         f"若开盘价超过此价位 2% 则放弃追高"
                     )
     except:
-        pass   # 提取失败则忽略，不影响其他条件
+        pass
 
-    # 3. 低开限制（硬条件）
-    low_limit = round(close_price * 0.97, 2)
-    conditions.append(f"低开幅度不超过3% (不低于{low_limit}元)，否则放弃所有买入计划")
+    # 3. 低开限制（根据策略动态调整）
+    if '妖股' in track:
+        low_limit_pct = 5.0
+        desc = "妖股允许大幅低开，但需竞价量能配合"
+    elif '逆风' in track:
+        low_limit_pct = 3.0
+        desc = "逆风环境低开3%以上放弃"
+    else:  # 缩量潜伏及其他
+        low_limit_pct = 2.5
+        desc = "缩量潜伏低开2.5%以上放弃"
+
+    low_limit = round(close_price * (1 - low_limit_pct/100), 2)
+    conditions.append(f"❌ 低开幅度超过{low_limit_pct}% (低于{low_limit}元) → 放弃买入（{desc}）")
 
     return {'code': code, 'name': name, 'conditions': conditions, 'active': True}
 
@@ -925,6 +959,22 @@ def run_autopsy(safe_dates):
             time.sleep(0.15)
 
         if update_count > 0:
+            try:
+                # 获取最近20条验尸结果（非“待验尸”）
+                df_latest = pd.DataFrame(worksheet.get_all_records())
+                completed = df_latest[df_latest['验尸结果'] != '待验尸'].tail(20)
+                if len(completed) >= 5:
+                    win_count = len(completed[completed['验尸结果'].str.contains('🏆|盈利|✅策略有效', na=False)])
+                    win_rate = round(win_count / len(completed) * 100, 1)
+                    # 写入 Prompt_History
+                    prompt_ws = sh.worksheet(PROMPT_HIST_SHEET) if PROMPT_HIST_SHEET in [ws.title for ws in sh.worksheets()] else sh.add_worksheet(title=PROMPT_HIST_SHEET, rows=100, cols=6)
+                    prompt_data = prompt_ws.get_all_values()
+                    if len(prompt_data) > 1:
+                        last_row = len(prompt_data)
+                        prompt_ws.update_cell(last_row, 5, win_rate)   # 胜率列
+                        prompt_ws.update_cell(last_row, 6, len(completed))  # 交易笔数
+            except Exception as e:
+                logging.warning(f"更新版本胜率失败: {e}")
             st.success(f"💀 T+2验尸完成，更新 {update_count} 条")
         else:
             st.warning("没有记录被更新，请检查T+2数据是否充足")
@@ -1023,7 +1073,7 @@ def generate_prompt_evolution(failed_cases_text, current_prompt_desc):
     except Exception as e:
         return f"❌ {e}", None
 
-# ================= 12. HTML 报告导出（略，如需要可加） =================
+# ================= 12. HTML 报告导出 =================
 def clean_display_text(final_text):
     if not final_text: return final_text
     cleaned = re.sub(r'\n?\{[^{}]*"rating"[^{}]*\}\s*$', '', final_text)
@@ -1360,6 +1410,91 @@ def ai_trade_review(stock_record, sell_price):
         return resp.choices[0].message.content
     except: return "审查失败"
 
+def analyze_holding(stock_record, tf_client):
+    """对单只持仓股进行跟踪分析，返回AI建议（区分策略风格）"""
+    if not llm_client: return "AI未就绪"
+    code = stock_record.get('代码') or stock_record.get('code')
+    name = stock_record.get('名称') or stock_record.get('name')
+    buy_price = float(stock_record['买入价'])
+    track = stock_record.get('策略赛道', '')  # 获取当初的策略轨道
+
+    # 根据轨道定义纪律参数（可调整）
+    if '妖股' in track:
+        stop_loss_pct = -5.0       # 妖股波动大，止损放宽
+        profit_target = 10.0       # 快速止盈
+        time_stop_minutes = 15     # 更短的时间止损
+    elif '逆风' in track:
+        stop_loss_pct = -2.0       # 逆风严格止损
+        profit_target = 5.0
+        time_stop_minutes = 30
+    else:  # 缩量潜伏或其他
+        stop_loss_pct = -3.0
+        profit_target = 8.0
+        time_stop_minutes = 30
+
+    # 获取最新行情
+    try:
+        tf_code = f"{code}.{'SH' if code.startswith('6') else 'SZ'}"
+        df_k = tf_client.klines.get(tf_code, period='1d', count=20, as_dataframe=True)
+        if df_k is None or len(df_k) < 5:
+            return "数据不足，无法分析"
+        latest = df_k.iloc[-1]
+        current_price = float(latest.get('close', latest.get('last_price')))
+        pct_chg = (current_price - buy_price) / buy_price * 100
+        today_pct = float(latest.get('pct_chg', 0))
+        vol = float(latest.get('volume', 0))
+        avg_vol_5 = df_k['volume'].tail(5).mean()
+        vol_ratio = vol / avg_vol_5 if avg_vol_5 > 0 else 1.0
+        ma5 = df_k['close'].tail(5).mean()
+        ma20 = df_k['close'].tail(20).mean() if len(df_k) >= 20 else df_k['close'].mean()
+        ma_status = "多头" if ma5 > ma20 else "空头"
+    except Exception as e:
+        return f"行情获取失败: {e}"
+
+    # 构建带有策略纪律的提示词
+    prompt = f"""持仓跟踪（{track}风格）：
+股票：{name}({code})
+买入价：{buy_price}，当前价：{current_price}，盈亏：{pct_chg:.1f}%
+今日涨跌：{today_pct:.2f}%，量比：{vol_ratio:.2f}，均线：{ma_status}
+
+该策略纪律：止损线 {stop_loss_pct}%，止盈目标 {profit_target}%，时间止损 {time_stop_minutes} 分钟。
+请根据当前行情，判断是否触发上述纪律，给出操作建议（持有/减仓/卖出），并附10字内理由。"""
+    try:
+        resp = llm_client.chat.completions.create(
+            model=CONFIG["LLM_MODEL"],
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=100,
+            timeout=10
+        )
+        return resp.choices[0].message.content.strip()
+    except:
+        return "AI分析超时，请人工判断"
+        
+def auto_rollback_if_needed():
+    if not gc: return
+    try:
+        sh = gc.open_by_url(spreadsheet_url)
+        prompt_ws = sh.worksheet(PROMPT_HIST_SHEET)
+        data = prompt_ws.get_all_values()
+        if len(data) < 2: return
+        last_row = data[-1]
+        # 最近一笔的胜率和交易笔数
+        win_rate = float(last_row[4]) if len(last_row) > 4 and last_row[4] else 100
+        trades = int(last_row[5]) if len(last_row) > 5 and last_row[5] else 0
+        if trades >= 10 and win_rate < 30:
+            # 存在上一版本则回滚
+            if len(data) >= 3:
+                prev_row = data[-2]
+                prev_prompt = prev_row[2] if len(prev_row) > 2 else None
+                if prev_prompt:
+                    st.session_state.active_prompts["normal"] = prev_prompt + " (已自动回滚)"
+                    st.session_state.current_active_prompt = f"已回滚至 {prev_row[1]}"
+                    st.warning(f"⚠️ 当前策略胜率过低 ({win_rate}%)，已自动回滚至上一版本。")
+    except Exception as e:
+        logging.warning(f"自动回滚检查失败: {e}")
+
+auto_rollback_if_needed()
+
 # ================= 侧边栏 =================
 with st.sidebar:
     st.header("⚙️ 参数")
@@ -1370,8 +1505,24 @@ with st.sidebar:
     watchlist_input = st.text_area("代码", value="600519,000858,300750", height=150)
     st.divider()
     st.header("🧬 AI策略进化")
+    # 显示当前版本胜率
+    try:
+        sh = gc.open_by_url(spreadsheet_url)
+        prompt_ws = sh.worksheet(PROMPT_HIST_SHEET)
+        data = prompt_ws.get_all_values()
+        if len(data) > 1:
+            last_row = data[-1]
+            version = last_row[1] if len(last_row) > 1 else "?"
+            winrate = last_row[4] if len(last_row) > 4 else "?"
+            trades = last_row[5] if len(last_row) > 5 else "?"
+            st.caption(f"版本 {version} | 近{trades}笔胜率 {winrate}%")
+    except:
+        pass
     st.caption(f"当前状态: {st.session_state.current_active_prompt}")
     run_evolution = st.button("🔍 分析错题本", use_container_width=True)
+    st.divider()
+    st.header("📊 持仓跟踪")
+    run_tracking = st.button("🔍 实时跟踪分析", use_container_width=True)
     st.divider()
     st.header("🔥 尾盘狙击 (14:45)")
     now = datetime.now(tz_shanghai)
@@ -1647,10 +1798,25 @@ elif scan_phase == "scan":
         # 竞价确认表
         if normal_results or demon_results or defense_results:
             st.subheader("📋 明日竞价入场确认表")
-            all_stocks = normal_results + demon_results + defense_results
+            # 为每个结果关联轨道名称
+            all_stocks = []
+            for item in normal_results:
+                all_stocks.append({'row': item['row'], 'final': item['final'], 'track_name': '缩量潜伏'})
+            for item in demon_results:
+                all_stocks.append({'row': item['row'], 'final': item['final'], 'track_name': '主板妖股'})
+            for item in defense_results:
+                all_stocks.append({'row': item['row'], 'final': item['final'], 'track_name': '逆风突破'})
+            
             for item in all_stocks:
-                row, final = item['row'], item['final']
-                cond = generate_auction_checklist(row, final)
+                row, final, track_name = item['row'], item['final'], item['track_name']
+                # 根据轨道名称确定 track 类型
+                if '妖股' in track_name:
+                    track = "妖股"
+                elif '逆风' in track_name:
+                    track = "逆风"
+                else:
+                    track = "缩量"
+                cond = generate_auction_checklist(row, final, track)
                 with st.expander(f"🔍 {cond['name']} ({cond['code']}) 竞价条件"):
                     for c in cond['conditions']: st.write(f"- {c}")
                     st.caption("⚠️ 若任一条件不满足，放弃买入")
@@ -1677,7 +1843,18 @@ elif scan_phase == "scan":
     if st.button("返回主界面"):
         st.session_state.scan_phase = None
         st.rerun()
-            
+
+if run_tracking:
+    portfolio_df = load_portfolio()
+    if portfolio_df is None or portfolio_df.empty:
+        st.info("当前无持仓")
+    else:
+        st.subheader("📊 持仓实时跟踪分析")
+        for _, holding in portfolio_df.iterrows():
+            with st.expander(f"{holding['名称']}({holding['代码']}) | 成本{holding['买入价']}"):
+                result = analyze_holding(holding, tf)
+                st.write(result)
+                
 # ========== 尾盘狙击（独立功能） ==========
 if run_tail:
     tail_df = tail_sniper_scan()
