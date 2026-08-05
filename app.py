@@ -1334,7 +1334,7 @@ run_autopsy(safe_dates)
 
 # ================= 持仓管理函数（必须放在主界面之前） =================
 def load_portfolio():
-    """从 Portfolio 工作表读取持有中的股票"""
+    """从 Portfolio 工作表读取持有中的股票（增强兼容性）"""
     if not gc or not spreadsheet_url: return pd.DataFrame()
     try:
         sh = gc.open_by_url(spreadsheet_url)
@@ -1344,12 +1344,34 @@ def load_portfolio():
             ws = sh.add_worksheet(title="Portfolio", rows=100, cols=10)
             ws.append_row(["日期", "代码", "名称", "策略赛道", "买入价", "持仓数量", "当前状态", "卖出价", "卖出日期", "AI审查结果"])
             return pd.DataFrame()
+
         data = ws.get_all_records()
+        if not data:
+            return pd.DataFrame()
+
         df = pd.DataFrame(data)
-        if df.empty: return df
-        return df[df['当前状态'] == '持有中']
+
+        # 自动识别状态列
+        status_col = None
+        if '当前状态' in df.columns:
+            status_col = '当前状态'
+        else:
+            for col in df.columns:
+                if '状态' in str(col):
+                    status_col = col
+                    break
+
+        if status_col is None:
+            # 没有状态列，返回全部数据（或空）
+            st.warning("Portfolio 表缺少「当前状态」列，无法正确筛选持仓")
+            return pd.DataFrame()
+
+        # 筛选持有中的记录（忽略前后空格）
+        mask = df[status_col].astype(str).str.strip() == '持有中'
+        return df[mask].copy()
     except Exception as e:
         logging.error(f"加载持仓失败: {e}")
+        st.warning(f"加载持仓异常: {e}")
         return pd.DataFrame()
 
 def save_new_buy(stock, track, buy_price, quantity, date):
