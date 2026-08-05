@@ -1735,7 +1735,6 @@ elif scan_phase == "buy":
     # ----- 阶段2：昨日推荐买入确认 -----
     st.subheader("📥 昨日推荐买入确认")
     try:
-        # 使用缓存的 Sheet1 数据，避免额外 API 请求
         df_hist = pd.DataFrame(st.session_state.get("sheet1_data", []))
         if df_hist.empty:
             st.info("暂无历史推荐记录")
