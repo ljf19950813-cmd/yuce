@@ -1660,7 +1660,6 @@ with st.sidebar:
         hot_keywords_str = st.text_input("今日热点关键词（手动输入）", value="")
     # 存入 session，供后续扫描使用
     st.session_state.hot_keywords = hot_keywords_str
-    st.write("调试：读取到的热点数据", hot_topics)
     st.divider()
     st.header("🧬 AI策略进化")
     # 显示当前版本胜率
