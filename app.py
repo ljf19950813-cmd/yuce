@@ -164,6 +164,46 @@ def financial_blacklist_filter(df):
         st.warning(f"财务过滤异常: {e}")
         return df
 
+def load_hot_topics():
+    """从 Hot_Topics 工作表读取最近一次更新的热点主题（未确认的）"""
+    if not gc or not spreadsheet_url: return []
+    try:
+        sh = gc.open_by_url(spreadsheet_url)
+        try:
+            ws = sh.worksheet("Hot_Topics")
+        except gspread.exceptions.WorksheetNotFound:
+            return []   # 工作表不存在
+        data = ws.get_all_records()
+        if not data: return []
+        df = pd.DataFrame(data)
+        # 取最新一次更新的所有主题（通常是一批同时写入的）
+        latest_time = df['更新时间'].max()
+        latest_topics = df[(df['更新时间'] == latest_time) & (df['是否确认'] == '否')]
+        return latest_topics.to_dict('records')
+    except Exception as e:
+        logging.warning(f"加载热点主题失败: {e}")
+        return []
+
+def add_hotspot_flag(stock_df, confirmed_keywords_str):
+    """
+    给股票 DataFrame 添加一个 'is_hot' 列，标记是否与热点关键词匹配。
+    confirmed_keywords_str: 用户确认的热点关键词，逗号分隔的字符串。
+    """
+    if not confirmed_keywords_str or stock_df is None or stock_df.empty:
+        stock_df['is_hot'] = False
+        return stock_df
+
+    kw_list = [k.strip() for k in confirmed_keywords_str.split(',') if k.strip()]
+    if not kw_list:
+        stock_df['is_hot'] = False
+        return stock_df
+
+    # 在股票名称和代码中匹配关键词（不区分大小写）
+    pattern = '|'.join(kw_list)
+    stock_df['is_hot'] = stock_df['name'].str.contains(pattern, case=False, na=False)
+    # 也可以加入代码匹配（极少情况）
+    return stock_df
+    
 def filter_recent_surge(df, days=5, max_pct=30):
     """
     剔除近 days 个交易日累计涨幅超过 max_pct% 的股票。
@@ -615,6 +655,10 @@ def analyze_with_llm(stock_dict, minute_feature_text, market_context, history_co
 - 今日最高: {stock_dict.get('high', '未知')} 元
 - 昨日收盘: {stock_dict.get('pre_close', '0.0')} 元
 """
+    # 热点提示（如果该股属于用户确认的热点板块）
+    hot_hint = ""
+    if stock_dict.get('is_hot'):
+        hot_hint = "🔥 该股属于今日确认的热点板块，请结合热点持续性给予仓位和信心评估。"
     user_prompt = f"""【大盘与情绪】:\n{market_context}
 【历史趋势快照】:\n{history_context}
 {price_info}
@@ -622,6 +666,7 @@ def analyze_with_llm(stock_dict, minute_feature_text, market_context, history_co
 【数据】: 涨幅 {stock_dict.get('pct_chg', 0):.2f}%, 量比 {stock_dict.get('vol_ratio', 0):.2f}, 成交额 {stock_dict.get('amount', 0)/100000000:.1f}亿, 换手 {stock_dict.get('turnover', 0):.2f}%
 【分时】: {minute_feature_text}
 {warning_info}
+{hot_hint}
 ⚠️ 【交易计划】：我将于【明日（T+1日）】进行买入操作。请基于上述T日收盘数据，制定明日的集合竞价观察点及盘中条件买入策略。
 {STRUCTURED_OUTPUT_SUFFIX}"""
     try:
@@ -1569,6 +1614,27 @@ with st.sidebar:
     st.header("👁️ 自选股监控")
     watchlist_input = st.text_area("代码", value="600519,000858,300750", height=150)
     st.divider()
+    st.header("🔥 今日热点主题")
+    hot_topics = load_hot_topics()
+    if hot_topics:
+        confirmed_keywords = []
+        for t in hot_topics:
+            confirmed = st.checkbox(f"{t['主题']} (热度{t['热度评分']})", key=f"hot_{t['主题']}")
+            if confirmed:
+                # 将该主题的关键词加入总关键词池
+                kws = t['关键词'].split(',')
+                confirmed_keywords.extend([k.strip() for k in kws])
+        if confirmed_keywords:
+            hot_keywords_str = ','.join(list(set(confirmed_keywords)))  # 去重
+            st.text_input("已确认热点关键词", value=hot_keywords_str, disabled=True)
+        else:
+            hot_keywords_str = ""
+            st.text_input("已确认热点关键词", value="", disabled=True)
+    else:
+        hot_keywords_str = ""
+        st.text_input("今日热点关键词（手动输入，逗号分隔）", value="", key="manual_hot_keywords")
+        hot_keywords_str = st.session_state.get("manual_hot_keywords", "")
+    st.divider()
     st.header("🧬 AI策略进化")
     # 显示当前版本胜率
     try:
@@ -1609,23 +1675,11 @@ with st.sidebar:
     # 自选股诊断按钮保持独立，不触发流程
     run_watchlist = st.button("👁️ 自选股深度诊断", type="secondary", use_container_width=True)
     st.caption("💡 盘后务必查看「明日竞价确认表」，明早若条件不达标，请放弃买入！")
-
-if st.button("修复历史股票代码"):
-    # 修复 Sheet1
-    sh = gc.open_by_url(spreadsheet_url)
-    ws = sh.worksheet(SHEET_NAME)
-    codes = ws.col_values(3)[1:]  # 假设代码在第三列
-    for i, code in enumerate(codes, start=2):
-        new_code = str(code).replace("'","").zfill(6)
-        ws.update_cell(i, 3, f"'{new_code}")
-    # 修复 Tail_Snipe
-    ws2 = sh.worksheet("Tail_Snipe")
-    codes2 = ws2.col_values(3)[1:]
-    for i, code in enumerate(codes2, start=2):
-        new_code = str(code).replace("'","").zfill(6)
-        ws2.update_cell(i, 3, f"'{new_code}")
-    st.success("历史代码已修复")
-    
+    # 存储热点关键词供后续使用
+    if hot_keywords_str:
+        st.session_state.hot_keywords = hot_keywords_str
+    else:
+        st.session_state.hot_keywords = ""
 # ================= 自选股深度诊断（独立，不触发持仓流程） =================
 if run_watchlist:
     if not tf or not llm_client: st.error("客户端未初始化"); st.stop()
@@ -1809,6 +1863,7 @@ elif scan_phase == "scan":
     if not normal_df.empty:
         normal_df = calculate_real_vol_ratio(normal_df)
         normal_df = normal_df[normal_df['vol_ratio'] <= 1.2].head(CONFIG['TOP_N_NORMAL'])
+        normal_df = add_hotspot_flag(normal_df, st.session_state.get("hot_keywords", ""))
 
     # 轨道二：妖股
     demon_df = filter_demon_stocks(df)
@@ -1816,6 +1871,7 @@ elif scan_phase == "scan":
     demon_df = filter_recent_surge(demon_df, days=3, max_pct=40)
     if not demon_df.empty:
         demon_df = calculate_real_vol_ratio(demon_df).head(CONFIG['TOP_N_DEMON'])
+        demon_df = add_hotspot_flag(demon_df, st.session_state.get("hot_keywords", ""))
 
     # 轨道三：逆风突破
     defense_df = pd.DataFrame()
@@ -1826,6 +1882,7 @@ elif scan_phase == "scan":
         if not defense_df.empty:
             defense_df = calculate_real_vol_ratio(defense_df)
             defense_df = defense_df[defense_df['vol_ratio'] <= 2.5].head(CONFIG['TOP_N_DEFENSE'])
+            defense_df = add_hotspot_flag(defense_df, st.session_state.get("hot_keywords", ""))
 
     all_codes = []
     if not normal_df.empty: all_codes.extend(normal_df['tf_code'].tolist())
