@@ -1433,7 +1433,7 @@ def ai_trade_review(stock_record, sell_price):
     except: return "审查失败"
 
 def analyze_holding(stock_record, tf_client):
-    """对单只持仓股进行跟踪分析，返回AI建议（增强调试版）"""
+    """对单只持仓股进行深度跟踪：复盘 + 后续操作建议 + 动态价格指导"""
     if not llm_client: return "AI未就绪"
     code = str(stock_record.get('代码') or stock_record.get('code', '')).replace("'", "").strip().zfill(6)
     name = stock_record.get('名称') or stock_record.get('name', '')
@@ -1464,7 +1464,6 @@ def analyze_holding(stock_record, tf_client):
             return "当前价异常"
         pct_chg = (current_price - buy_price) / buy_price * 100
 
-        # 今日涨幅手动计算
         prev_close = float(df_k.iloc[-2].get('close', df_k.iloc[-2].get('last_price', current_price)))
         today_pct = (current_price - prev_close) / prev_close * 100 if prev_close > 0 else 0
 
@@ -1477,22 +1476,28 @@ def analyze_holding(stock_record, tf_client):
     except Exception as e:
         return f"行情获取失败: {e}"
 
-    # 调用AI
-    prompt = f"""持仓跟踪（{track}风格）：
+    prompt = f"""你是超短线交易教练，请复盘以下持仓并提供操作指导。
+
+【持仓信息】
 股票：{name}({code})
+策略风格：{track}
 买入价：{buy_price}，当前价：{current_price}，盈亏：{pct_chg:.1f}%
 今日涨跌：{today_pct:.2f}%，量比：{vol_ratio:.2f}，均线：{ma_status}
-该策略纪律：止损 {stop_loss_pct}%，止盈 {profit_target}%，时间止损 {time_stop} 分钟。
-请根据当前行情，判断是否触发上述纪律，给出操作建议（持有/减仓/卖出），并附10字内理由。"""
+该策略纪律：止损 {stop_loss_pct}%，止盈目标 {profit_target}%，时间止损 {time_stop} 分钟。
+
+请按以下格式输出（严格三行，每行 ≤40字）：
+复盘：[当初买入逻辑是否仍在？当前走势是否符合预期？可加入均线/量能判断]
+操作：[持有/减仓/卖出/加仓]，并附 10 字内理由
+价位：[若持有，给出新的目标价和止损价；若卖出，给出清仓价]"""
     try:
         resp = llm_client.chat.completions.create(
             model=CONFIG["LLM_MODEL"],
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=500,
-            timeout=10
+            max_tokens=500,   # 增加 tokens，允许更详细输出
+            timeout=15
         )
         content = resp.choices[0].message.content
-        return content.strip() if content else "AI返回空内容"
+        return content.strip() if content else "AI未生成有效建议"
     except Exception as e:
         return f"AI分析失败: {e}"
         
