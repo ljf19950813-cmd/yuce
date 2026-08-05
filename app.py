@@ -1402,12 +1402,16 @@ def record_sell_and_review(stock_record, sell_price, date):
     try:
         sh = gc.open_by_url(spreadsheet_url)
         ws = sh.worksheet("Portfolio")
-        cell = ws.find(stock_record['代码'])
+        # 强制标准化代码为6位字符串（无论原始是数字还是字符串）
+        raw_code = stock_record.get('代码') or stock_record.get('code', '')
+        code = str(raw_code).replace("'", "").strip().zfill(6)
+        cell = ws.find(code)   # 现在 code 肯定是字符串
         if cell:
             row = cell.row
-            ws.update_cell(row, 8, sell_price)
-            ws.update_cell(row, 9, date)
+            ws.update_cell(row, 8, sell_price)        # 卖出价
+            ws.update_cell(row, 9, date)               # 卖出日期
             ws.update_cell(row, 7, "已卖出")
+            # AI审查
             review = ai_trade_review(stock_record, sell_price)
             ws.update_cell(row, 10, review)
             st.info(f"卖出已记录，AI审查：{review}")
