@@ -166,22 +166,51 @@ def financial_blacklist_filter(df):
 
 def load_hot_topics():
     """从 Hot_Topics 工作表读取最近一次更新的热点主题（未确认的）"""
-    if not gc or not spreadsheet_url: return []
+    if not gc or not spreadsheet_url:
+        return []
     try:
         sh = gc.open_by_url(spreadsheet_url)
         try:
             ws = sh.worksheet("Hot_Topics")
         except gspread.exceptions.WorksheetNotFound:
-            return []   # 工作表不存在
+            return []
+
         data = ws.get_all_records()
-        if not data: return []
+        if not data:
+            return []
+
         df = pd.DataFrame(data)
-        # 取最新一次更新的所有主题（通常是一批同时写入的）
-        latest_time = df['更新时间'].max()
-        latest_topics = df[(df['更新时间'] == latest_time) & (df['是否确认'] == '否')]
+        # 调试：打印实际列名（可观察是否与预期一致）
+        st.caption(f"Hot_Topics 实际列名: {list(df.columns)}")
+
+        # 自动适应可能的中文列名（防止空格、全半角差异）
+        time_col = None
+        confirm_col = None
+        for col in df.columns:
+            if '更新' in str(col) and '时间' in str(col):
+                time_col = col
+            if '确认' in str(col):
+                confirm_col = col
+
+        if time_col is None or confirm_col is None:
+            st.warning(f"未找到必要列(更新时间/是否确认)，请检查表头。实际列名: {list(df.columns)}")
+            return []
+
+        # 筛选最新一批未确认的主题
+        latest_time = df[time_col].max()
+        mask = (df[time_col] == latest_time) & (df[confirm_col].astype(str).str.strip() == '否')
+        latest_topics = df[mask]
+
+        if latest_topics.empty:
+            # 尝试放宽条件：如果没有“否”，则显示全部未确认（可能全是“是”）
+            mask2 = (df[time_col] == latest_time)
+            latest_topics = df[mask2]
+            if latest_topics.empty:
+                st.caption("Hot_Topics 表中没有符合条件的数据")
+
         return latest_topics.to_dict('records')
     except Exception as e:
-        logging.warning(f"加载热点主题失败: {e}")
+        st.warning(f"加载热点主题失败: {e}")
         return []
 
 def add_hotspot_flag(stock_df, confirmed_keywords_str):
