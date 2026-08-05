@@ -1433,39 +1433,41 @@ def ai_trade_review(stock_record, sell_price):
     except: return "审查失败"
 
 def analyze_holding(stock_record, tf_client):
-    """对单只持仓股进行跟踪分析，返回AI建议（区分策略风格）"""
+    """对单只持仓股进行跟踪分析，返回AI建议（增强调试版）"""
     if not llm_client: return "AI未就绪"
-    code = stock_record.get('代码') or stock_record.get('code')
-    code = str(code).replace("'", "").replace(" ", "").strip().zfill(6)
-    name = stock_record.get('名称') or stock_record.get('name')
-    buy_price = float(stock_record['买入价'])
-    track = stock_record.get('策略赛道', '')  # 获取当初的策略轨道
-
-    # 根据轨道定义纪律参数（可调整）
-    if '妖股' in track:
-        stop_loss_pct = -5.0       # 妖股波动大，止损放宽
-        profit_target = 10.0       # 快速止盈
-        time_stop_minutes = 15     # 更短的时间止损
-    elif '逆风' in track:
-        stop_loss_pct = -2.0       # 逆风严格止损
-        profit_target = 5.0
-        time_stop_minutes = 30
-    else:  # 缩量潜伏或其他
-        stop_loss_pct = -3.0
-        profit_target = 8.0
-        time_stop_minutes = 30
-
-    # 获取最新行情
+    code = str(stock_record.get('代码') or stock_record.get('code', '')).replace("'", "").strip().zfill(6)
+    name = stock_record.get('名称') or stock_record.get('name', '')
     try:
-        tf_code = f"{code}.{'SH' if code.startswith('6') else 'SZ'}"
+        buy_price = float(stock_record['买入价'])
+    except:
+        return "买入价数据错误"
+    track = stock_record.get('策略赛道', '')
+
+    # 纪律参数
+    if '妖股' in track:
+        stop_loss_pct, profit_target, time_stop = -5.0, 10.0, 15
+    elif '逆风' in track:
+        stop_loss_pct, profit_target, time_stop = -2.0, 5.0, 30
+    else:
+        stop_loss_pct, profit_target, time_stop = -3.0, 8.0, 30
+
+    # 获取行情
+    try:
+        exchange = 'SH' if code.startswith('6') else 'SZ'
+        tf_code = f"{code}.{exchange}"
         df_k = tf_client.klines.get(tf_code, period='1d', count=20, as_dataframe=True)
         if df_k is None or len(df_k) < 5:
-            return "数据不足，无法分析"
+            return f"行情数据不足 (仅{len(df_k) if df_k is not None else 0}根K线)"
         latest = df_k.iloc[-1]
         current_price = float(latest.get('close', latest.get('last_price')))
+        if current_price <= 0:
+            return "当前价异常"
         pct_chg = (current_price - buy_price) / buy_price * 100
+
+        # 今日涨幅手动计算
         prev_close = float(df_k.iloc[-2].get('close', df_k.iloc[-2].get('last_price', current_price)))
         today_pct = (current_price - prev_close) / prev_close * 100 if prev_close > 0 else 0
+
         vol = float(latest.get('volume', 0))
         avg_vol_5 = df_k['volume'].tail(5).mean()
         vol_ratio = vol / avg_vol_5 if avg_vol_5 > 0 else 1.0
@@ -1475,13 +1477,12 @@ def analyze_holding(stock_record, tf_client):
     except Exception as e:
         return f"行情获取失败: {e}"
 
-    # 构建带有策略纪律的提示词
+    # 调用AI
     prompt = f"""持仓跟踪（{track}风格）：
 股票：{name}({code})
 买入价：{buy_price}，当前价：{current_price}，盈亏：{pct_chg:.1f}%
 今日涨跌：{today_pct:.2f}%，量比：{vol_ratio:.2f}，均线：{ma_status}
-
-该策略纪律：止损线 {stop_loss_pct}%，止盈目标 {profit_target}%，时间止损 {time_stop_minutes} 分钟。
+该策略纪律：止损 {stop_loss_pct}%，止盈 {profit_target}%，时间止损 {time_stop} 分钟。
 请根据当前行情，判断是否触发上述纪律，给出操作建议（持有/减仓/卖出），并附10字内理由。"""
     try:
         resp = llm_client.chat.completions.create(
@@ -1490,9 +1491,10 @@ def analyze_holding(stock_record, tf_client):
             max_tokens=100,
             timeout=10
         )
-        return resp.choices[0].message.content.strip()
-    except:
-        return "AI分析超时，请人工判断"
+        content = resp.choices[0].message.content
+        return content.strip() if content else "AI返回空内容"
+    except Exception as e:
+        return f"AI分析失败: {e}"
         
 def auto_rollback_if_needed():
     if not gc: return
