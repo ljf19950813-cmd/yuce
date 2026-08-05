@@ -1,0 +1,27 @@
+name: Hot Topics Crawler
+
+on:
+  schedule:
+    - cron: '0 1,5 * * *'          # 每天 UTC 1:00 和 5:00 执行（北京时间9:00 和 13:00）
+  workflow_dispatch:               # 允许手动触发
+
+jobs:
+  crawl:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests beautifulsoup4 openai gspread oauth2client
+
+      - name: Run hot topics crawler
+        env:
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT_JSON }}
+        run: python crawler/hot_topics_crawler.py
