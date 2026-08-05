@@ -1489,17 +1489,30 @@ def analyze_holding(stock_record, tf_client):
 复盘：[当初买入逻辑是否仍在？当前走势是否符合预期？可加入均线/量能判断]
 操作：[持有/减仓/卖出/加仓]，并附 10 字内理由
 价位：[若持有，给出新的目标价和止损价；若卖出，给出清仓价]"""
-    try:
-        resp = llm_client.chat.completions.create(
-            model=CONFIG["LLM_MODEL"],
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=500,   # 增加 tokens，允许更详细输出
-            timeout=15
-        )
-        content = resp.choices[0].message.content
-        return content.strip() if content else "AI未生成有效建议"
-    except Exception as e:
-        return f"AI分析失败: {e}"
+
+    for attempt in range(3):   # 最多尝试三次
+        try:
+            resp = llm_client.chat.completions.create(
+                model=CONFIG["LLM_MODEL"],
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=1000,
+                timeout=30   # 增加超时时间
+            )
+            content = resp.choices[0].message.content
+            if content and content.strip():
+                return content.strip()
+            # 如果返回空内容，记录并重试
+            logging.warning(f"持仓跟踪 {name}({code}) 第{attempt+1}次返回空内容，准备重试...")
+            time.sleep(2)   # 等2秒再试
+        except Exception as e:
+            logging.error(f"持仓跟踪 {name}({code}) 第{attempt+1}次调用失败: {e}")
+            if attempt < 2:
+                time.sleep(3)
+            else:
+                return f"AI调用失败: {e}"
+
+    # 三次都返回空
+    return f"AI连续3次返回空内容，请检查模型状态或稍后重试。"
         
 def auto_rollback_if_needed():
     if not gc: return
