@@ -1464,7 +1464,8 @@ def analyze_holding(stock_record, tf_client):
         latest = df_k.iloc[-1]
         current_price = float(latest.get('close', latest.get('last_price')))
         pct_chg = (current_price - buy_price) / buy_price * 100
-        today_pct = float(latest.get('pct_chg', 0))
+        prev_close = float(df_k.iloc[-2].get('close', df_k.iloc[-2].get('last_price', current_price)))
+        today_pct = (current_price - prev_close) / prev_close * 100 if prev_close > 0 else 0
         vol = float(latest.get('volume', 0))
         avg_vol_5 = df_k['volume'].tail(5).mean()
         vol_ratio = vol / avg_vol_5 if avg_vol_5 > 0 else 1.0
@@ -1874,8 +1875,16 @@ if run_tracking:
     else:
         st.subheader("📊 持仓实时跟踪分析")
         for _, holding in portfolio_df.iterrows():
-            with st.expander(f"{holding['名称']}({holding['代码']}) | 成本{holding['买入价']}"):
-                result = analyze_holding(holding, tf)
+            # 强制标准化代码（无论原始格式如何，都补全为6位文本）
+            raw_code = holding.get('代码') or holding.get('code')
+            code = str(raw_code).replace("'", "").replace(" ", "").strip().zfill(6)
+            name = holding.get('名称') or holding.get('name', '未知')
+            buy_price = holding.get('买入价', '?')
+            with st.expander(f"{name}({code}) | 成本{buy_price}"):
+                # 传入标准化后的代码副本，避免影响原始数据
+                holding_copy = holding.to_dict()
+                holding_copy['代码'] = code
+                result = analyze_holding(holding_copy, tf)
                 st.write(result)
                 
 # ========== 尾盘狙击（独立功能） ==========
