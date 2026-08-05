@@ -8,18 +8,19 @@ from datetime import datetime
 from openai import OpenAI
 
 # ============ 配置区（请根据您的实际信息填写） ============
-LLM_API_KEY = os.environ.get("LLM_API_KEY")          # DeepSeek API Key
+LLM_API_KEY = os.environ.get("LLM_API_KEY")
+if not LLM_API_KEY:
+    raise ValueError("未找到环境变量 LLM_API_KEY")
 LLM_BASE_URL = "https://api.deepseek.com/v1"
 LLM_MODEL = "deepseek-chat"                    # 使用便宜模型即可
 
 SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/1r-YLpb-QJVBegJsntbOs_Bgn8Dyt1LnIypEgor20D6k/edit?pli=1&gid=1959313853#gid=1959313853"       # 您的 Google Sheets 电子表格 URL
 SHEET_NAME = "Hot_Topics"                      # 存储热点的工作表名称
 
-# Google 服务账户凭据（与 Streamlit 用同一个 JSON，直接内联或从文件读取）
-# 方式一：直接粘贴 JSON 内容（注意转义双引号）
-SERVICE_ACCOUNT_INFO = json.loads(os.environ.get("SERVICE_ACCOUNT_JSON"))
-# 方式二：从文件读取（如果您的环境可以直接访问 secrets 文件，可替换）
-# 这里为了方便，使用内联字典，请务必替换为您的真实凭据
+SERVICE_ACCOUNT_JSON = os.environ.get("SERVICE_ACCOUNT_JSON")
+if not SERVICE_ACCOUNT_JSON:
+    raise ValueError("未找到环境变量 SERVICE_ACCOUNT_JSON")
+SERVICE_ACCOUNT_INFO = json.loads(SERVICE_ACCOUNT_JSON)
 
 # ============ 多新闻源定义 ============
 NEWS_SOURCES = [
