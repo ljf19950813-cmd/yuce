@@ -1436,6 +1436,7 @@ def analyze_holding(stock_record, tf_client):
     """对单只持仓股进行跟踪分析，返回AI建议（区分策略风格）"""
     if not llm_client: return "AI未就绪"
     code = stock_record.get('代码') or stock_record.get('code')
+    code = str(code).replace("'", "").replace(" ", "").strip().zfill(6)
     name = stock_record.get('名称') or stock_record.get('name')
     buy_price = float(stock_record['买入价'])
     track = stock_record.get('策略赛道', '')  # 获取当初的策略轨道
