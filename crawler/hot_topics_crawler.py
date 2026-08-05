@@ -18,7 +18,6 @@ SHEET_NAME = "Hot_Topics"                      # 存储热点的工作表名称
 # Google 服务账户凭据（与 Streamlit 用同一个 JSON，直接内联或从文件读取）
 # 方式一：直接粘贴 JSON 内容（注意转义双引号）
 SERVICE_ACCOUNT_INFO = json.loads(os.environ.get("SERVICE_ACCOUNT_JSON"))
-}
 # 方式二：从文件读取（如果您的环境可以直接访问 secrets 文件，可替换）
 # 这里为了方便，使用内联字典，请务必替换为您的真实凭据
 
