@@ -1488,7 +1488,7 @@ def analyze_holding(stock_record, tf_client):
         resp = llm_client.chat.completions.create(
             model=CONFIG["LLM_MODEL"],
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=100,
+            max_tokens=500,
             timeout=10
         )
         content = resp.choices[0].message.content
