@@ -794,17 +794,14 @@ def save_today_predictions(normal_res, demon_res, defense_res, safe_dates):
     try:
         sh = gc.open_by_url(spreadsheet_url)
         worksheet = sh.worksheet(SHEET_NAME)
-        existing = worksheet.get_all_values()
-        if len(existing) > 1:
-            if safe_dates['today'] in [r[0] for r in existing[1:]]:
-                st.warning("今日已存在，跳过保存")
-                return
     except Exception as e:
         st.error(f"无法打开工作表 {SHEET_NAME}: {e}")
-        return   # 直接返回，避免后续使用未定义的 worksheet
+        return
+
     all_results = []
     for res_list, track_name in [(normal_res, "缩量潜伏"), (demon_res, "主板妖股"), (defense_res, "逆风突破")]:
         for item in res_list:
+            # ... 原有处理逻辑不变 ...
             row = item['row']; final_text = item['final']
             close_price = float(row['close'])
             buy_price = extract_price_from_text(final_text, close_price, "buy")
