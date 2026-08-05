@@ -1390,6 +1390,7 @@ st.title("👑 四轨制猎手 V27.5 (精简版)")
 safe_dates = get_safe_trade_dates()
 st.caption(f"📅 基准日: {safe_dates['today']} | 昨: {safe_dates['yesterday']}")
 # 全局 Sheet1 缓存，避免重复读取
+# 全局 Sheet1 缓存，避免重复读取
 if gc and spreadsheet_url:
     try:
         if "sheet1_data" not in st.session_state or st.session_state.get("sheet1_refresh"):
@@ -1401,7 +1402,6 @@ if gc and spreadsheet_url:
         if "sheet1_data" not in st.session_state:
             st.session_state.sheet1_data = []
         st.warning(f"Sheet1 缓存加载失败: {e}")
-run_autopsy(safe_dates)
 
     try:
         if "hot_topics_data" not in st.session_state or st.session_state.get("hot_topics_refresh"):
