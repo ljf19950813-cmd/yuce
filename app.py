@@ -1273,7 +1273,7 @@ def tail_sniper_scan():
         realtime = realtime[realtime['amount'] > 1e8]
 
         # 只保留成交额最大的前 50 只
-        realtime = realtime.sort_values('amount', ascending=False).head(50)
+        realtime = realtime.sort_values('amount', ascending=False).head(80)
     except Exception as e:
         st.error(f"实时行情过滤失败: {e}")
         return pd.DataFrame()
