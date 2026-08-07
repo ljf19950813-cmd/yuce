@@ -202,7 +202,58 @@ def add_hotspot_flag(stock_df, confirmed_keywords_str):
         stock_df['is_hot'] = False
         return stock_df
 
-    pattern = '|'.join(kw_list)
+    # 概念映射表（完整版）
+    concept_map = {
+        '低空经济': ['无人机', '飞行汽车', '空管', '航空', 'evtol'],
+        'AI算力': ['光模块', '服务器', '算力', '数据中心', 'cpo', 'gpu'],
+        '人工智能': ['ai', '智能', '算法', '大模型', '机器人', '自动化'],
+        '机器人': ['机器人', '自动化', '智能装备', '减速器', '伺服'],
+        '工业母机': ['数控', '机床', '工业母机', '智能装备'],
+        '量子计算': ['量子', '量子通信', '量子芯片'],
+        '半导体': ['芯片', '半导体', '集成电路', '封测', '光刻', '晶圆'],
+        '存储芯片': ['存储', 'nand', 'dram', '存储器'],
+        '消费电子': ['手机', '智能穿戴', '消费电子', '无线耳机'],
+        '汽车电子': ['汽车电子', '车载', '智能座舱', '自动驾驶'],
+        '新能源': ['光伏', '锂电', '储能', '新能源', '风电'],
+        '光伏': ['光伏', '太阳能', '硅片', '电池片', '逆变器'],
+        '锂电池': ['锂电', '锂电池', '正极', '负极', '电解液'],
+        '储能': ['储能', '储能系统', '储能电池'],
+        '氢能源': ['氢能', '氢能源', '燃料电池'],
+        '虚拟电厂': ['虚拟电厂', '电力', '电网', '电力交易'],
+        '医药': ['医药', '生物', '制药', '医疗'],
+        '创新药': ['创新药', '生物药', 'pd-1', 'car-t'],
+        '医疗器械': ['医疗器械', '医疗设备', '体外诊断'],
+        '中药': ['中药', '中药材', '片仔癀'],
+        '军工': ['军工', '航天', '航空', '船舶', '防务'],
+        '商业航天': ['航天', '卫星', '火箭', '商业航天'],
+        '有色金属': ['铜', '铝', '黄金', '稀土', '有色'],
+        '煤炭': ['煤炭', '煤'],
+        '石油': ['石油', '石化', '油服'],
+        '券商': ['证券', '券商'],
+        '银行': ['银行'],
+        '保险': ['保险'],
+        '房地产': ['地产', '房地产'],
+        '白酒': ['白酒', '酒'],
+        '食品饮料': ['食品', '饮料', '乳业', '调味品'],
+        '旅游': ['旅游', '酒店', '景区'],
+        '传媒': ['传媒', '游戏', '出版', '影视'],
+        '教育': ['教育', '培训'],
+        '碳中和': ['环保', '碳交易', '碳中和', '新能源'],
+        '环保': ['环保', '污水处理', '固废'],
+        '国企改革': ['央企', '国企', '改革', '重组'],
+        '一带一路': ['基建', '港口', '海外工程'],
+        '跨境电商': ['跨境电商', '外贸', '物流'],
+        '数字货币': ['数字货币', '区块链'],
+    }
+
+    expanded_kw = set()
+    for kw in kw_list:
+        if kw in concept_map:
+            expanded_kw.update(concept_map[kw])
+        else:
+            expanded_kw.add(kw)
+
+    pattern = '|'.join(expanded_kw)
     stock_df['is_hot'] = stock_df['name'].str.contains(pattern, case=False, na=False)
     return stock_df
     
@@ -896,25 +947,24 @@ def check_buy_feasibility_simple(buy_price, t1_data):
 
 def run_autopsy(safe_dates):
     if not gc or not spreadsheet_url: return
+    # 强制刷新，获取最新“待验尸”列表
+    st.session_state.sheet1_refresh = True
     try:
         sh = gc.open_by_url(spreadsheet_url)
         worksheet = sh.worksheet(SHEET_NAME)
-        df_history = pd.DataFrame(st.session_state.get("sheet1_data", []))
+        # 重新读取表格
+        data = worksheet.get_all_values()
+        if not data or len(data) < 2: return
+        header = data[0]
+        df_history = pd.DataFrame(data[1:], columns=header)
         if df_history.empty: return
-        # 检查必需列
-        required_cols = ['验尸结果', '日期', '代码', 'AI建议买点']
-        for col in required_cols:
-            if col not in df_history.columns:
-                st.warning(f"表格缺少列: {col}")
-                return
 
-        # 只验尸日期 ≤ T-2 的记录（确保至少过了两个交易日）
+        if '验尸结果' not in df_history.columns: return
         pending = df_history[df_history['验尸结果'] == '待验尸'].copy()
         if pending.empty: return
 
         if '日期' in pending.columns:
-            # 获取T-2日期
-            t_minus_2 = safe_dates['day_before']  # 已经是T-2
+            t_minus_2 = safe_dates['day_before']
             pending = pending[pending['日期'].astype(str) <= t_minus_2]
             if pending.empty:
                 st.info("暂无T+2日可验尸的记录")
@@ -922,70 +972,55 @@ def run_autopsy(safe_dates):
 
         st.info(f"🔍 检测到 {len(pending)} 条可验尸记录（T+2日），开始模拟卖出...")
 
-        # 需要获取T+1和T+2两天的行情
         symbols_to_check = pending['代码'].unique().tolist()
         if not tf: return
 
-        # 获取T+1日行情（原有函数）
         t1_data = get_tickflow_data_for_symbols(tf, symbols_to_check)
-        # 获取T+2日行情（新函数，下面定义）
         t2_data = get_tickflow_data_for_symbols_offset(tf, symbols_to_check, offset_days=2)
 
         if t1_data.empty and t2_data.empty:
             st.warning("无法获取T+1/T+2行情数据")
             return
 
-        # 读取表头获取列号
-        updated_rows = worksheet.get_all_values()
-        header = updated_rows[0]
+        # 获取列号（表头已经作为 columns，直接用列名）
         try:
             col_high = header.index('T+1日最高') + 1
             col_low = header.index('T+1日最低') + 1
             col_close = header.index('T+1日收盘') + 1
-            # 新增列（确保表格中已添加这些列）
             col_t2_open = header.index('T+2日开盘') + 1 if 'T+2日开盘' in header else None
             col_t2_avg = header.index('T+2日均价') + 1 if 'T+2日均价' in header else None
             col_sell_price = header.index('模拟卖出价') + 1 if '模拟卖出价' in header else None
             col_result = header.index('验尸结果') + 1
         except ValueError as e:
-            st.warning(f"表头缺失关键列，请更新Sheet1表头。缺失: {e}")
+            st.warning(f"表头缺失关键列: {e}")
             return
 
         update_count = 0
         for idx, row in pending.iterrows():
             code = str(row['代码']).strip().replace("'", "").replace(" ", "")
-            # 获取T+1行情
             t1_row = t1_data[t1_data['code'].astype(str).str.strip() == code]
             if t1_row.empty: continue
             t1 = t1_row.iloc[0]
             t1_high, t1_low, t1_close = t1['high'], t1['low'], t1['close']
 
-            # 获取T+2行情
             t2_row = t2_data[t2_data['code'].astype(str).str.strip() == code]
             if t2_row.empty: continue
             t2 = t2_row.iloc[0]
-            t2_open = t2['open']
-            t2_high = t2['high']
-            t2_low = t2['low']
-            t2_close = t2['close']
-            # 计算T+2日均价（可用amount/volume或近似均价）
+            t2_open, t2_high, t2_low, t2_close = t2['open'], t2['high'], t2['low'], t2['close']
             t2_avg = (t2_high + t2_low + t2_close) / 3
             sell_price = t2_avg
 
-            # 获取买入价
             try:
                 ai_buy = float(row['AI建议买点'])
             except:
                 ai_buy = 0.0
             if ai_buy <= 0: continue
 
-            # 检查T+1日是否可成交（简单判断）
+            # 判断可执行性
             if ai_buy < t1_low - 0.01 or ai_buy > t1_high + 0.01:
                 final_result = "⛔ 不可执行：T+1日未触及买点"
             else:
-                # 计算盈亏
                 pct = (sell_price - ai_buy) / ai_buy * 100
-                # 构造T+1和T+2数据字典给AI
                 t1_dict = {'open': t1['open'], 'high': t1_high, 'low': t1_low, 'close': t1_close,
                            'pct_chg': t1.get('pct_chg', 0), 'turnover': t1.get('turnover', 0),
                            'vol_ratio': t1.get('vol_ratio', 1)}
@@ -999,7 +1034,6 @@ def run_autopsy(safe_dates):
                 if ai_result:
                     final_result = f"🤖 T+2验尸:\n{ai_result[:400]}"
                 else:
-                    # 规则兜底
                     if pct > 5:
                         final_result = f"🏆 大肉 +{pct:.1f}% (卖{sell_price:.2f})"
                     elif pct > 0:
@@ -1009,8 +1043,8 @@ def run_autopsy(safe_dates):
                     else:
                         final_result = f"❌ 亏损 {pct:.1f}%"
 
-            # 写回表格
-            sheet_row = idx + 2
+            # 写入
+            sheet_row = idx + 2  # idx 从 0 开始，加 2 跳过表头
             worksheet.update_cell(sheet_row, col_high, round(t1_high, 2))
             worksheet.update_cell(sheet_row, col_low, round(t1_low, 2))
             worksheet.update_cell(sheet_row, col_close, round(t1_close, 2))
@@ -1025,22 +1059,9 @@ def run_autopsy(safe_dates):
             time.sleep(0.15)
 
         if update_count > 0:
-            try:
-                df_latest = pd.DataFrame(st.session_state.get("sheet1_data", []))
-                completed = df_latest[df_latest['验尸结果'] != '待验尸'].tail(20)
-                if len(completed) >= 5:
-                    win_count = len(completed[completed['验尸结果'].str.contains('🏆|盈利|✅策略有效', na=False)])
-                    win_rate = round(win_count / len(completed) * 100, 1)
-                    prompt_ws = sh.worksheet(PROMPT_HIST_SHEET) if PROMPT_HIST_SHEET in [ws.title for ws in sh.worksheets()] else sh.add_worksheet(title=PROMPT_HIST_SHEET, rows=100, cols=6)
-                    prompt_data = prompt_ws.get_all_values()
-                    if len(prompt_data) > 1:
-                        last_row = len(prompt_data)
-                        prompt_ws.update_cell(last_row, 5, win_rate)
-                        prompt_ws.update_cell(last_row, 6, len(completed))
-            except Exception as e:
-                logging.warning(f"更新版本胜率失败: {e}")
             st.success(f"💀 T+2验尸完成，更新 {update_count} 条")
-            st.session_state.sheet1_refresh = True   # ← 正确位置
+            # 验尸完成后刷新缓存
+            st.session_state.sheet1_refresh = True
         else:
             st.warning("没有记录被更新，请检查T+2数据是否充足")
     except Exception as e:
