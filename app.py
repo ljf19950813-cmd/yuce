@@ -197,10 +197,6 @@ def load_hot_topics():
         return []
         
 def add_hotspot_flag(stock_df, confirmed_keywords_str):
-    """
-    给股票 DataFrame 添加一个 'is_hot' 列，标记是否与热点关键词匹配。
-    confirmed_keywords_str: 用户确认的热点关键词，逗号分隔的字符串。
-    """
     if not confirmed_keywords_str or stock_df is None or stock_df.empty:
         stock_df['is_hot'] = False
         return stock_df
@@ -210,10 +206,8 @@ def add_hotspot_flag(stock_df, confirmed_keywords_str):
         stock_df['is_hot'] = False
         return stock_df
 
-    # 在股票名称和代码中匹配关键词（不区分大小写）
     pattern = '|'.join(kw_list)
     stock_df['is_hot'] = stock_df['name'].str.contains(pattern, case=False, na=False)
-    # 也可以加入代码匹配（极少情况）
     return stock_df
     
 def filter_recent_surge(df, days=5, max_pct=30):
@@ -653,6 +647,7 @@ st.session_state.active_prompts = {
 }
 
 def analyze_with_llm(stock_dict, minute_feature_text, market_context, history_context, mode="normal"):
+    st.write(f"DEBUG: {stock_dict.get('name')} is_hot={stock_dict.get('is_hot')}")
     if not llm_client: return "无AI", "无AI"
     active_prompts = st.session_state.active_prompts
     system_p = active_prompts.get(mode, PROMPT_NORMAL)
@@ -813,7 +808,6 @@ def save_today_predictions(normal_res, demon_res, defense_res, safe_dates):
     all_results = []
     for res_list, track_name in [(normal_res, "缩量潜伏"), (demon_res, "主板妖股"), (defense_res, "逆风突破")]:
         for item in res_list:
-            # ... 原有处理逻辑不变 ...
             row = item['row']; final_text = item['final']
             close_price = float(row['close'])
             buy_price = extract_price_from_text(final_text, close_price, "buy")
@@ -831,10 +825,17 @@ def save_today_predictions(normal_res, demon_res, defense_res, safe_dates):
             all_results.append([
                 safe_dates['today'],
                 row['name'],
-                "'" + str(row['code']),          # ← 加单引号
+                "'" + str(row['code']),
                 track_name,
-                round(close_price,2), round(buy_price,2), round(stop_price,2), rating,
-                final_text, None,None,None, "待验尸", conditions_str
+                round(close_price,2),
+                round(buy_price,2),
+                round(stop_price,2),
+                rating,
+                final_text,
+                None, None, None,   # T+1日最高/低/收
+                None, None, None,   # T+2日开盘/均价/模拟卖出价
+                "待验尸",           # 验尸结果
+                conditions_str      # 竞价条件
             ])
     if all_results:
         try:
@@ -1639,6 +1640,7 @@ with st.sidebar:
     st.divider()
     st.header("🔥 今日热点主题")
     hot_topics = load_hot_topics()
+    # 计算确认的关键词字符串
     if hot_topics:
         confirmed_keywords = []
         for t in hot_topics:
@@ -1654,13 +1656,18 @@ with st.sidebar:
                 confirmed_keywords.extend(kws)
         if confirmed_keywords:
             hot_keywords_str = ','.join(list(set(confirmed_keywords)))
-            st.text_input("已确认热点关键词", value=hot_keywords_str, disabled=True)
         else:
             hot_keywords_str = ""
     else:
         hot_keywords_str = st.text_input("今日热点关键词（手动输入）", value="")
-    # 存入 session，供后续扫描使用
+
+    # 存入 session（每次脚本重新运行时都会执行到这里，保证是最新的勾选状态）
     st.session_state.hot_keywords = hot_keywords_str
+
+    # 调试输出（确认是否生效）
+    st.caption(f"当前热点关键词：{st.session_state.hot_keywords}")
+
+    # 手动刷新热点数据按钮（独立逻辑）
     if st.button("🔄 刷新热点数据"):
         st.session_state.hot_topics_refresh = True
         st.rerun()
@@ -1892,16 +1899,16 @@ elif scan_phase == "scan":
     normal_df = filter_recent_surge(normal_df, days=5, max_pct=25)
     if not normal_df.empty:
         normal_df = calculate_real_vol_ratio(normal_df)
-        normal_df = normal_df[normal_df['vol_ratio'] <= 1.2].head(CONFIG['TOP_N_NORMAL'])
-        normal_df = add_hotspot_flag(normal_df, st.session_state.get("hot_keywords", ""))
+        normal_df = normal_df[normal_df['vol_ratio'] <= 1.2]
+        normal_df = add_hotspot_flag(normal_df, st.session_state.get("hot_keywords", "")).head(CONFIG['TOP_N_NORMAL'])
 
     # 轨道二：妖股
     demon_df = filter_demon_stocks(df)
     demon_df = financial_blacklist_filter(demon_df)
     demon_df = filter_recent_surge(demon_df, days=3, max_pct=40)
     if not demon_df.empty:
-        demon_df = calculate_real_vol_ratio(demon_df).head(CONFIG['TOP_N_DEMON'])
-        demon_df = add_hotspot_flag(demon_df, st.session_state.get("hot_keywords", ""))
+        demon_df = calculate_real_vol_ratio(demon_df)
+        demon_df = add_hotspot_flag(demon_df, st.session_state.get("hot_keywords", "")).head(CONFIG['TOP_N_DEMON'])
 
     # 轨道三：逆风突破
     defense_df = pd.DataFrame()
@@ -1911,8 +1918,8 @@ elif scan_phase == "scan":
         defense_df = filter_recent_surge(defense_df, days=5, max_pct=20)
         if not defense_df.empty:
             defense_df = calculate_real_vol_ratio(defense_df)
-            defense_df = defense_df[defense_df['vol_ratio'] <= 2.5].head(CONFIG['TOP_N_DEFENSE'])
-            defense_df = add_hotspot_flag(defense_df, st.session_state.get("hot_keywords", ""))
+            defense_df = defense_df[defense_df['vol_ratio'] <= 2.5]
+            defense_df = add_hotspot_flag(defense_df, st.session_state.get("hot_keywords", "")).head(CONFIG['TOP_N_DEFENSE'])
 
     all_codes = []
     if not normal_df.empty: all_codes.extend(normal_df['tf_code'].tolist())
