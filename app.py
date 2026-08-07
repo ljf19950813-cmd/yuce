@@ -105,7 +105,8 @@ if "base_anti_hallucination_rules" not in st.session_state:
     st.session_state.base_anti_hallucination_rules = default_rules
 if "active_prompts" not in st.session_state:
     st.session_state.active_prompts = {
-        "normal": "", "demon": "", "defense": "", "watchlist": ""
+        "normal": PROMPT_NORMAL, "demon": PROMPT_DEMON,
+        "defense": PROMPT_DEFENSE, "watchlist": PROMPT_WATCHLIST
     }
 
 # ================= 安全日期生成器 =================
@@ -647,8 +648,17 @@ st.session_state.active_prompts = {
 }
 
 def analyze_with_llm(stock_dict, minute_feature_text, market_context, history_context, mode="normal"):
+    # 🔧 调试输出（热点功能验证用，确认生效后可删除）
     st.write(f"DEBUG: {stock_dict.get('name')} is_hot={stock_dict.get('is_hot')}")
+
     if not llm_client: return "无AI", "无AI"
+
+    # 确保 Prompt 字典已初始化（防止 session state 丢失）
+    if "active_prompts" not in st.session_state or not st.session_state.active_prompts:
+        st.session_state.active_prompts = {
+            "normal": PROMPT_NORMAL, "demon": PROMPT_DEMON,
+            "defense": PROMPT_DEFENSE, "watchlist": PROMPT_WATCHLIST
+        }
     active_prompts = st.session_state.active_prompts
     system_p = active_prompts.get(mode, PROMPT_NORMAL)
 
