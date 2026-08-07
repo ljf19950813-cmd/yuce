@@ -921,8 +921,8 @@ def run_autopsy(safe_dates):
         symbols_to_check = pending['代码'].unique().tolist()
         if not tf: return
 
-        t1_data = get_tickflow_data_for_symbols(tf, symbols_to_check)
-        t2_data = get_tickflow_data_for_symbols_offset(tf, symbols_to_check, offset_days=2)
+        t1_data = get_tickflow_data_for_symbols_offset(tf, symbols_to_check, offset_days=1)   # T+1日（昨天）
+        t2_data = get_tickflow_data_for_symbols_offset(tf, symbols_to_check, offset_days=0)   # T+2日（最新）
 
         if t1_data.empty and t2_data.empty:
             st.warning("无法获取T+1/T+2行情数据")
@@ -977,7 +977,7 @@ def run_autopsy(safe_dates):
 
                 ai_result = ai_autopsy_record_v2(analysis_text, t1_dict, t2_dict, stock_name, code, mode)
                 if ai_result:
-                    final_result = f"🤖 T+2验尸:\n{ai_result[:400]}"
+                    final_result = f"🤖 T+2验尸:\n{ai_result}"   # 完整输出，不截断
                 else:
                     if pct > 5:
                         final_result = f"🏆 大肉 +{pct:.1f}% (卖{sell_price:.2f})"
@@ -1090,7 +1090,7 @@ T+2日模拟卖出：开{t2_dict['open']} 均价{t2_dict.get('avg','?')} 卖出�
         resp = llm_client.chat.completions.create(
             model=CONFIG["LLM_MODEL"],
             messages=[{"role":"system","content":system_prompt}, {"role":"user","content":user_prompt}],
-            max_tokens=1000
+            max_tokens=2000
         )
         return resp.choices[0].message.content
     except: return None
