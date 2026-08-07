@@ -1117,39 +1117,6 @@ def generate_prompt_evolution(failed_cases_text, current_prompt_desc):
     except Exception as e:
         return f"❌ {e}", None
 
-# ================= 12. HTML 报告导出 =================
-    def render_track(track_name, track_emoji, results, mode_type):
-        if not results: return ""
-        track_html = f"<div class='track-title'>{track_emoji} {track_name}</div>"
-        for item in results:
-            row, final = item['row'], item['final']
-            pct_color = "#e74c3c" if row['pct_chg'] >= 0 else "#27ae60"
-            analysis_html = robust_md_to_html(clean_display_text(final))
-            track_html += f"""
-            <div class="stock-card">
-                <div class="stock-header">
-                    <span class="stock-name">{row['name']}</span>
-                    <span class="stock-code">{row['code']} | {row['board']}</span>
-                </div>
-                <div class="stock-metrics">
-                    <span class="metric-item">当前价: {row['close']:.2f}</span>
-                    <span class="metric-item" style="color:{pct_color}">涨幅: {row['pct_chg']:.2f}%</span>
-                    <span class="metric-item">换手: {row['turnover']:.2f}%</span>
-                    <span class="metric-item">量比: {row.get('vol_ratio', 0):.2f}</span>
-                    <span class="metric-item">成交额: {row['amount']/100000000:.1f}亿</span>
-                </div>
-                <div class="analysis-content">{analysis_html}</div>
-            </div>
-            """
-        return track_html
-
-    html_parts.append(render_track("轨道一：缩量潜伏池", "🛡️", normal_results, "normal"))
-    html_parts.append(render_track("轨道二：主板妖股池", "🐉", demon_results, "demon"))
-    html_parts.append(render_track("轨道三：逆风突破池", "🔥", defense_results, "defense"))
-    html_parts.append(render_track("自选股深度诊断", "👁️", watchlist_results, "watchlist"))
-    html_parts.append("</body></html>")
-    return "\n".join(html_parts).encode('utf-8')
-
 # ================= 13. 尾盘狙击（原样保留） =================
 def tail_sniper_scan():
     if not tf: return pd.DataFrame()
