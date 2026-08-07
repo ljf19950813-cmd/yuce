@@ -694,8 +694,6 @@ st.session_state.active_prompts = {
 }
 
 def analyze_with_llm(stock_dict, minute_feature_text, market_context, history_context, mode="normal"):
-    # 🔧 调试输出（热点功能验证用，确认生效后可删除）
-    st.write(f"DEBUG: {stock_dict.get('name')} is_hot={stock_dict.get('is_hot')}")
 
     if not llm_client: return "无AI", "无AI"
 
@@ -1416,6 +1414,7 @@ def save_tail_snipe_results(results_list, safe_date):
 st.title("👑 四轨制猎手 V27.5 (精简版)")
 safe_dates = get_safe_trade_dates()
 st.caption(f"📅 基准日: {safe_dates['today']} | 昨: {safe_dates['yesterday']}")
+run_autopsy(safe_dates)
 # 全局 Sheet1 缓存，避免重复读取
 # 全局 Sheet1 缓存，避免重复读取
 if gc and spreadsheet_url:
