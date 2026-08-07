@@ -93,10 +93,6 @@ if "analysis_report" not in st.session_state:
     st.session_state.analysis_report = None
 if "prompt_draft" not in st.session_state:
     st.session_state.prompt_draft = None
-if "html_report_data" not in st.session_state:
-    st.session_state.html_report_data = None
-if "html_report_filename" not in st.session_state:
-    st.session_state.html_report_filename = ""
 if "base_anti_hallucination_rules" not in st.session_state:
     default_rules = """【核心纪律】
 1. 严禁编造任何财务数据、价格或涨跌幅。
@@ -688,21 +684,16 @@ PROMPT_WATCHLIST = f"""你是冷酷的"账户急救操盘手"。客户自选股�
 - **时间止损**：X分钟不突破则离场
 - **一句话**：20字内"""
 
-st.session_state.active_prompts = {
-    "normal": PROMPT_NORMAL, "demon": PROMPT_DEMON,
-    "defense": PROMPT_DEFENSE, "watchlist": PROMPT_WATCHLIST
-}
+if "active_prompts" not in st.session_state:
+    st.session_state.active_prompts = {
+        "normal": PROMPT_NORMAL, "demon": PROMPT_DEMON,
+        "defense": PROMPT_DEFENSE, "watchlist": PROMPT_WATCHLIST
+    }
 
 def analyze_with_llm(stock_dict, minute_feature_text, market_context, history_context, mode="normal"):
 
     if not llm_client: return "无AI", "无AI"
 
-    # 确保 Prompt 字典已初始化（防止 session state 丢失）
-    if "active_prompts" not in st.session_state or not st.session_state.active_prompts:
-        st.session_state.active_prompts = {
-            "normal": PROMPT_NORMAL, "demon": PROMPT_DEMON,
-            "defense": PROMPT_DEFENSE, "watchlist": PROMPT_WATCHLIST
-        }
     active_prompts = st.session_state.active_prompts
     system_p = active_prompts.get(mode, PROMPT_NORMAL)
 
@@ -899,74 +890,31 @@ def save_today_predictions(normal_res, demon_res, defense_res, safe_dates):
         except Exception as e:
             st.error(f"保存失败: {e}")
 
-# ================= 10. 智能验尸 =================
-def ai_autopsy_record(analysis_text, t1_data_dict, stock_name, stock_code, mode):
-    if not llm_client or not analysis_text: return None
-    system_prompt = """你是冷静的A股短线交易复盘助手。
-请阅读 AI 在 T 日的完整分析（包含买入计划、止损等），结合 T+1 日的实际行情数据，判断：
-1. 该交易计划是否具备可执行性？（是否触及买入价？是否一字板/秒板/全天无机会？）
-2. 如果可执行，实际盈亏如何？最高盈利多少？是否触及止损？
-3. 策略逻辑本身是否正确？有无重大误判？
-4. 最终给出一个简短结论（≤40字），并使用以下标签之一：
-   - ✅策略有效 （预测符合，可获利）
-   - ⚠️执行偏差 （触及买点但未按计划止盈/止损）
-   - ❌策略错误 （买点逻辑本身错误，导致亏损）
-   - ⛔不可执行 （未触及买点、一字板、流动性枯竭等）
-5. 如果不可执行，必须说明具体原因。
-请严格按照以下格式输出：
----
-复盘结论：[标签] [简短总结]
-详细分析：[2-3句核心复盘]
----
-"""
-    user_prompt = f"""股票：{stock_name}({stock_code}) 策略轨道：{mode}
-T日 AI 分析全文：{analysis_text[:2000]}
-T+1日实际行情：开盘 {t1_data_dict.get('open')}，最高 {t1_data_dict.get('high')}，最低 {t1_data_dict.get('low')}，收盘 {t1_data_dict.get('close')}，涨跌幅 {t1_data_dict.get('pct_chg','未知')}%，换手 {t1_data_dict.get('turnover','未知')}%
-请输出复盘结果。"""
-    try:
-        response = llm_client.chat.completions.create(
-            model=CONFIG["LLM_MODEL"],
-            messages=[{"role":"system","content":system_prompt}, {"role":"user","content":user_prompt}],
-            max_tokens=500
-        )
-        return response.choices[0].message.content
-    except: return None
-
-def check_buy_feasibility_simple(buy_price, t1_data):
-    if buy_price <= 0: return False, "无有效买点"
-    high, low, close, turnover, pre_close = t1_data['high'], t1_data['low'], t1_data['close'], t1_data['turnover'], t1_data['pre_close']
-    if pre_close > 0:
-        limit_up = round(pre_close * 1.1, 2)
-        if abs(high - limit_up) < 0.01 and abs(low - limit_up) < 0.01 and abs(close - limit_up) < 0.01 and turnover < 0.5:
-            return False, f"一字涨停(换手{turnover:.2f}%)"
-    if buy_price < low - 0.01: return False, f"最低价{low:.2f} > 买点{buy_price:.2f}"
-    if buy_price > high + 0.01: return False, f"最高价{high:.2f} < 买点{buy_price:.2f}"
-    return True, "可成交"
-
 def run_autopsy(safe_dates):
     if not gc or not spreadsheet_url: return
-    # 强制刷新，获取最新“待验尸”列表
     st.session_state.sheet1_refresh = True
     try:
         sh = gc.open_by_url(spreadsheet_url)
         worksheet = sh.worksheet(SHEET_NAME)
-        # 重新读取表格
         data = worksheet.get_all_values()
         if not data or len(data) < 2: return
         header = data[0]
         df_history = pd.DataFrame(data[1:], columns=header)
         if df_history.empty: return
-
         if '验尸结果' not in df_history.columns: return
         pending = df_history[df_history['验尸结果'] == '待验尸'].copy()
         if pending.empty: return
-
         if '日期' in pending.columns:
             t_minus_2 = safe_dates['day_before']
             pending = pending[pending['日期'].astype(str) <= t_minus_2]
             if pending.empty:
                 st.info("暂无T+2日可验尸的记录")
                 return
+
+        # 每次最多处理 10 条，防止 API 超额
+        if len(pending) > 10:
+            pending = pending.head(10)
+            st.info("待验尸记录超过 10 条，本次仅处理前 10 条")
 
         st.info(f"🔍 检测到 {len(pending)} 条可验尸记录（T+2日），开始模拟卖出...")
 
@@ -980,7 +928,7 @@ def run_autopsy(safe_dates):
             st.warning("无法获取T+1/T+2行情数据")
             return
 
-        # 获取列号（表头已经作为 columns，直接用列名）
+        # 获取列号
         try:
             col_high = header.index('T+1日最高') + 1
             col_low = header.index('T+1日最低') + 1
@@ -1014,7 +962,6 @@ def run_autopsy(safe_dates):
                 ai_buy = 0.0
             if ai_buy <= 0: continue
 
-            # 判断可执行性
             if ai_buy < t1_low - 0.01 or ai_buy > t1_high + 0.01:
                 final_result = "⛔ 不可执行：T+1日未触及买点"
             else:
@@ -1041,30 +988,43 @@ def run_autopsy(safe_dates):
                     else:
                         final_result = f"❌ 亏损 {pct:.1f}%"
 
-            # 写入
-            sheet_row = idx + 2  # idx 从 0 开始，加 2 跳过表头
-            worksheet.update_cell(sheet_row, col_high, round(t1_high, 2))
-            worksheet.update_cell(sheet_row, col_low, round(t1_low, 2))
-            worksheet.update_cell(sheet_row, col_close, round(t1_close, 2))
-            if col_t2_open:
-                worksheet.update_cell(sheet_row, col_t2_open, round(t2_open, 2))
-            if col_t2_avg:
-                worksheet.update_cell(sheet_row, col_t2_avg, round(t2_avg, 2))
-            if col_sell_price:
-                worksheet.update_cell(sheet_row, col_sell_price, round(sell_price, 2))
-            worksheet.update_cell(sheet_row, col_result, final_result)
-            update_count += 1
-            time.sleep(0.15)
+            # 写入（带重试机制）
+            sheet_row = idx + 2
+            success = False
+            for attempt in range(3):
+                try:
+                    worksheet.update_cell(sheet_row, col_high, round(t1_high, 2))
+                    worksheet.update_cell(sheet_row, col_low, round(t1_low, 2))
+                    worksheet.update_cell(sheet_row, col_close, round(t1_close, 2))
+                    if col_t2_open:
+                        worksheet.update_cell(sheet_row, col_t2_open, round(t2_open, 2))
+                    if col_t2_avg:
+                        worksheet.update_cell(sheet_row, col_t2_avg, round(t2_avg, 2))
+                    if col_sell_price:
+                        worksheet.update_cell(sheet_row, col_sell_price, round(sell_price, 2))
+                    worksheet.update_cell(sheet_row, col_result, final_result)
+                    success = True
+                    break
+                except Exception as e:
+                    if '429' in str(e):
+                        st.warning(f"写入 {code} 时遇到配额限制，等待 10 秒后重试...")
+                        time.sleep(10)
+                    else:
+                        raise
+            if success:
+                update_count += 1
+            else:
+                st.error(f"写入 {code} 失败（已重试3次）")
+            time.sleep(0.5)  # 额外延迟，降低请求频率
 
         if update_count > 0:
             st.success(f"💀 T+2验尸完成，更新 {update_count} 条")
-            # 验尸完成后刷新缓存
             st.session_state.sheet1_refresh = True
         else:
             st.warning("没有记录被更新，请检查T+2数据是否充足")
     except Exception as e:
         st.warning(f"验尸异常: {e}")
-
+        
 def get_tickflow_data_for_symbols_offset(tf_client, symbols_list, offset_days=2):
     """
     获取相对于最新交易日的偏移日K线。
@@ -1158,76 +1118,6 @@ def generate_prompt_evolution(failed_cases_text, current_prompt_desc):
         return f"❌ {e}", None
 
 # ================= 12. HTML 报告导出 =================
-def clean_display_text(final_text):
-    if not final_text: return final_text
-    cleaned = re.sub(r'\n?\{[^{}]*"rating"[^{}]*\}\s*$', '', final_text)
-    cleaned = re.sub(r'━{5,}.*?━{5,}', '', cleaned, flags=re.DOTALL)
-    return cleaned.strip()
-    
-def robust_md_to_html(md_text):
-    if not md_text: return "<p>【暂无分析内容】</p>"
-    html = md_text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-    html = re.sub(r'^#{1,4}\s+(.*?)$', r'<h3>\1</h3>', html, flags=re.MULTILINE)
-    html = re.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', html)
-    html = re.sub(r'\*(.*?)\*', r'<em>\1</em>', html)
-    lines = html.split('\n')
-    processed_lines = []
-    in_list = False
-    for line in lines:
-        stripped = line.strip()
-        is_list_item = re.match(r'^[-*]\s+(.*)', stripped) or re.match(r'^\d+\.\s+(.*)', stripped)
-        if is_list_item:
-            if not in_list:
-                processed_lines.append('<ul>')
-                in_list = True
-            content = re.sub(r'^[-*]\s+', '', stripped)
-            content = re.sub(r'^\d+\.\s+', '', content)
-            processed_lines.append(f'<li>{content}</li>')
-        else:
-            if in_list:
-                processed_lines.append('</ul>')
-                in_list = False
-            if stripped.startswith('<h3>'):
-                processed_lines.append(stripped)
-            elif stripped == '':
-                processed_lines.append('<br>')
-            else:
-                processed_lines.append(f'<p>{stripped}</p>')
-    if in_list: processed_lines.append('</ul>')
-    return '\n'.join(processed_lines)
-
-def export_to_html_report(normal_results, demon_results, defense_results, watchlist_results, market_context, safe_dates):
-    css_style = """
-    <style>
-    body { font-family: 'Segoe UI', 'Microsoft YaHei', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; max-width: 1000px; margin: 0 auto; padding: 20px; background: #f9f9f9; }
-    .header { text-align: center; border-bottom: 3px solid #2c3e50; padding-bottom: 15px; margin-bottom: 30px; }
-    .header h1 { color: #2c3e50; margin: 0; }
-    .header p { color: #7f8c8d; margin: 5px 0 0; }
-    .market-box { background: #fff; border-left: 5px solid #3498db; padding: 15px; margin-bottom: 30px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); white-space: pre-wrap; font-family: monospace; }
-    .track-title { background: #2c3e50; color: #fff; padding: 10px 15px; border-radius: 5px 5px 0 0; margin-top: 40px; font-size: 1.2em; font-weight: bold; page-break-before: always; }
-    .stock-card { background: #fff; border: 1px solid #ddd; border-radius: 0 0 5px 5px; padding: 20px; margin-bottom: 20px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); page-break-inside: avoid; }
-    .stock-header { display: flex; justify-content: space-between; border-bottom: 1px dashed #ccc; padding-bottom: 10px; margin-bottom: 15px; }
-    .stock-name { font-size: 1.3em; font-weight: bold; color: #e74c3c; }
-    .stock-code { color: #7f8c8d; font-size: 1.1em; }
-    .stock-metrics { display: flex; flex-wrap: wrap; gap: 10px; font-size: 0.9em; color: #555; margin-bottom: 15px; background: #f8f9fa; padding: 8px; border-radius: 4px;}
-    .metric-item { padding: 4px 8px; background: #e9ecef; border-radius: 3px; }
-    .analysis-content h3 { color: #2980b9; border-bottom: 1px solid #eee; padding-bottom: 5px; margin-top: 20px; }
-    .analysis-content ul { padding-left: 20px; margin: 10px 0; }
-    .analysis-content li { margin-bottom: 8px; }
-    .analysis-content strong { color: #c0392b; }
-    .analysis-content p { margin: 8px 0; }
-    @media print { 
-        body { background: #fff; } 
-        .stock-card { break-inside: avoid; page-break-inside: avoid; } 
-        .track-title { break-before: page; page-break-before: always; }
-    }
-    </style>
-    """
-    html_parts = [f"<!DOCTYPE html><html lang='zh-CN'><head><meta charset='UTF-8'><title>四轨制猎手复盘报告</title>{css_style}</head><body>"]
-    html_parts.append(f"<div class='header'><h1>👑 四轨制猎手实战报告 (V27.5)</h1><p>生成时间: {safe_dates['now_str']} | 基准日(T日): {safe_dates['today']}</p></div>")
-    html_parts.append("<h2>🌍 今日大盘与情绪环境</h2>")
-    html_parts.append(f"<div class='market-box'>{market_context}</div>")
-    
     def render_track(track_name, track_emoji, results, mode_type):
         if not results: return ""
         track_html = f"<div class='track-title'>{track_emoji} {track_name}</div>"
@@ -1689,9 +1579,6 @@ with st.sidebar:
     # 存入 session（每次脚本重新运行时都会执行到这里，保证是最新的勾选状态）
     st.session_state.hot_keywords = hot_keywords_str
 
-    # 调试输出（确认是否生效）
-    st.caption(f"当前热点关键词：{st.session_state.hot_keywords}")
-
     # 手动刷新热点数据按钮（独立逻辑）
     if st.button("🔄 刷新热点数据"):
         st.session_state.hot_topics_refresh = True
@@ -1806,17 +1693,6 @@ if run_watchlist:
                 st.markdown(item['final'])
             else:
                 st.info("该股分析无输出，请检查日志")
-
-    # HTML报告
-    st.divider()
-    with st.spinner("正在生成诊断报告..."):
-        html_data = export_to_html_report([], [], [], watchlist_results, market_context, safe_dates)
-        if html_data:
-            st.session_state.html_report_data = html_data
-            st.session_state.html_report_filename = f"自选股诊断_{safe_dates['now_str']}.html"
-            st.success("✅ 诊断报告已生成，可滑动至底部下载")
-        else:
-            st.warning("报告生成失败，但诊断结果仍可查看")
 
 # ================= 全市场扫描流程（基于会话阶段） =================
 scan_phase = st.session_state.get("scan_phase", None)
@@ -2067,18 +1943,3 @@ if run_tail:
         save_tail_snipe_results(tail_save_data, safe_dates['today'])
     else:
         st.info("无尾盘目标")
-
-# ================= 📥 全局下载按钮 =================
-st.divider()
-if st.session_state.get("html_report_data"):
-    st.subheader("📥 下载报告")
-    # 🔧 FIX-7: 删除 type="primary"（st.download_button 不支持该参数，会 TypeError）
-    st.download_button(
-        label=f"💾 点击下载: {st.session_state.html_report_filename}",
-        data=st.session_state.html_report_data,
-        file_name=st.session_state.html_report_filename,
-        mime="text/html",
-        use_container_width=True
-    )
-else:
-    st.caption("💡 提示：运行全市场扫描或自选股诊断后，这里会出现 HTML 报告下载按钮。")
