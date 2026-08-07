@@ -103,10 +103,6 @@ if "base_anti_hallucination_rules" not in st.session_state:
 2. 所有计算必须展示过程，精确到小数点后两位。
 3. 必须结合提供的【历史趋势快照】进行分析，严禁脱离数据空谈。"""
     st.session_state.base_anti_hallucination_rules = default_rules
-if "active_prompts" not in st.session_state:
-    st.session_state.active_prompts = {
-        "normal": PROMPT_NORMAL, "demon": PROMPT_DEMON,
-        "defense": PROMPT_DEFENSE, "watchlist": PROMPT_WATCHLIST
     }
 
 # ================= 安全日期生成器 =================
