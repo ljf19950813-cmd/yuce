@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 import warnings
 import httpx
 import streamlit as st
+from realtime_monitor import RealtimeMonitor
 
 # 必须第一时间调用
 st.set_page_config(page_title="V27.5 四轨猎魔 (精简版)", layout="wide")
@@ -1843,6 +1844,37 @@ elif scan_phase == "scan":
                     for c in cond['conditions']: st.write(f"- {c}")
                     st.caption("⚠️ 若任一条件不满足，放弃买入")
         save_today_predictions(normal_results, demon_results, defense_results, safe_dates)
+        # 保存本次扫描目标用于监控
+        st.session_state.last_scan_targets = []
+        for item in normal_results + demon_results + defense_results:
+            row = item['row']
+            final = item['final']
+            buy_price = extract_price_from_text(final, row['close'], "buy")
+            stop_price = extract_price_from_text(final, row['close'], "stop")
+            track = "缩量" if item in normal_results else ("妖股" if item in demon_results else "逆风")
+            st.session_state.last_scan_targets.append({
+                'code': row['code'],
+                'name': row['name'],
+                'buy_price': buy_price,
+                'stop_price': stop_price,
+                'track': track
+            })
+
+        # 同时加载持仓数据用于监控
+        portfolio_df = load_portfolio()
+        if not portfolio_df.empty:
+            st.session_state.last_portfolio = []
+            for _, holding in portfolio_df.iterrows():
+                profit_target = float(holding['买入价']) * 1.05  # 默认5%止盈，可根据策略调整
+                st.session_state.last_portfolio.append({
+                    'code': str(holding.get('代码', '')).zfill(6),
+                    'name': holding.get('名称', ''),
+                    'buy_price': float(holding['买入价']),
+                    'stop_loss': float(holding['买入价']) * 0.97,  # 默认-3%止损
+                    'profit_target': profit_target
+                })
+        else:
+            st.session_state.last_portfolio = []
 
     # 展示轨道结果
     st.subheader("🛡️ 轨道一：缩量潜伏池")
@@ -1910,3 +1942,25 @@ if run_tail:
         save_tail_snipe_results(tail_save_data, safe_dates['today'])
     else:
         st.info("无尾盘目标")
+    st.divider()
+    st.header("📡 盘中实时监控")
+    if "monitor_thread" not in st.session_state:
+        st.session_state.monitor_thread = None
+    enable_monitor = st.checkbox("启动 WebSocket 实时提醒（钉钉+AI）")
+    if enable_monitor:
+        if st.session_state.monitor_thread is None:
+            targets = st.session_state.get("last_scan_targets", [])
+            portfolios = st.session_state.get("last_portfolio", [])
+            if targets or portfolios:
+                monitor = RealtimeMonitor(targets, portfolios, llm_client=llm_client, llm_config=CONFIG)
+                monitor.start()
+                st.session_state.monitor_thread = monitor
+                st.success("监控已启动！请关注钉钉消息")
+            else:
+                st.warning("没有可监控的目标，请先运行全市场扫描")
+    else:
+        if st.session_state.monitor_thread is not None:
+            st.session_state.monitor_thread.stop()
+            st.session_state.monitor_thread = None
+            st.info("监控已停止")
+
