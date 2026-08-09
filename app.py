@@ -56,6 +56,8 @@ spreadsheet_url = st.secrets.get("SPREADSHEET_URL", "")
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 TF_API_KEY = st.secrets.get("TF_API_KEY", "")
 LLM_API_KEY = st.secrets.get("LLM_API_KEY", "")
+TICKFLOW_API_KEY = st.secrets.get("TICKFLOW_API_KEY", "")
+DINGTALK_WEBHOOK = st.secrets.get("DINGTALK_WEBHOOK", "")
 
 CONFIG = {
     "TOP_N_NORMAL": 5,
@@ -1952,7 +1954,13 @@ if run_tail:
             targets = st.session_state.get("last_scan_targets", [])
             portfolios = st.session_state.get("last_portfolio", [])
             if targets or portfolios:
-                monitor = RealtimeMonitor(targets, portfolios, llm_client=llm_client, llm_config=CONFIG)
+                monitor = RealtimeMonitor(
+                targets, portfolios,
+                tickflow_api_key=TICKFLOW_API_KEY,
+                dingtalk_webhook=DINGTALK_WEBHOOK,
+                llm_client=llm_client,
+                llm_config=CONFIG
+            )
                 monitor.start()
                 st.session_state.monitor_thread = monitor
                 st.success("监控已启动！请关注钉钉消息")
