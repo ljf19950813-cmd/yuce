@@ -1399,26 +1399,39 @@ def save_new_buy(stock, track, buy_price, quantity, date):
         st.error(f"保存买入失败: {e}")
 
 def record_sell_and_review(stock_record, sell_price, date):
-    """标记卖出，调用AI审查交易是否符合策略"""
+    """标记卖出，调用AI审查交易是否符合策略（带重试）"""
     if not gc: return
-    try:
-        sh = gc.open_by_url(spreadsheet_url)
-        ws = sh.worksheet("Portfolio")
-        # 强制标准化代码为6位字符串（无论原始是数字还是字符串）
-        raw_code = stock_record.get('代码') or stock_record.get('code', '')
-        code = str(raw_code).replace("'", "").strip().zfill(6)
-        cell = ws.find(code)   # 现在 code 肯定是字符串
-        if cell:
-            row = cell.row
-            ws.update_cell(row, 8, sell_price)        # 卖出价
-            ws.update_cell(row, 9, date)               # 卖出日期
-            ws.update_cell(row, 7, "已卖出")
-            # AI审查
-            review = ai_trade_review(stock_record, sell_price)
-            ws.update_cell(row, 10, review)
-            st.info(f"卖出已记录，AI审查：{review}")
-    except Exception as e:
-        st.error(f"记录卖出失败: {e}")
+    raw_code = stock_record.get('代码') or stock_record.get('code', '')
+    code = str(raw_code).replace("'", "").strip().zfill(6)
+    success = False
+    for attempt in range(3):
+        try:
+            sh = gc.open_by_url(spreadsheet_url)
+            ws = sh.worksheet("Portfolio")
+            cell = ws.find(code)
+            if cell:
+                row = cell.row
+                ws.update_cell(row, 8, sell_price)
+                ws.update_cell(row, 9, date)
+                ws.update_cell(row, 7, "已卖出")
+                review = ai_trade_review(stock_record, sell_price)
+                ws.update_cell(row, 10, review)
+                st.info(f"卖出已记录，AI审查：{review}")
+                success = True
+                break
+            else:
+                st.warning(f"未在 Portfolio 中找到 {code}，请检查代码格式")
+                break
+        except Exception as e:
+            if '429' in str(e):
+                st.warning(f"写入配额限制，等待 10 秒后重试...")
+                time.sleep(10)
+            else:
+                st.error(f"记录卖出失败: {e}")
+                break
+    if success:
+        # 卖出成功后刷新 Portfolio 缓存
+        st.session_state.portfolio_refresh = True
 
 def ai_trade_review(stock_record, sell_price):
     """让AI判断卖出是否符合超短线纪律"""
