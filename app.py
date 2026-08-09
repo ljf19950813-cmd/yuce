@@ -1944,39 +1944,38 @@ if run_tail:
     else:
         st.info("无尾盘目标")
 
-# ================= 实时监控（独立组件，不再嵌套） =================
-st.divider()
-st.header("📡 盘中实时监控")
-if "monitor_thread" not in st.session_state:
-    st.session_state.monitor_thread = None
+    # ========== 实时监控（增强版，带调试输出） ==========
+    st.divider()
+    st.header("📡 盘中实时监控")
+    if "monitor_thread" not in st.session_state:
+        st.session_state.monitor_thread = None
+
     enable_monitor = st.checkbox("启动 WebSocket 实时提醒（钉钉+AI）")
+
     if enable_monitor:
+        # 显示当前可监控标的数量
+        portfolio_df = load_portfolio()
+        portfolios = []
+        if not portfolio_df.empty:
+            for _, holding in portfolio_df.iterrows():
+                code_raw = holding.get('代码') or holding.get('code', '')
+                code = str(code_raw).replace("'", "").strip().zfill(6)
+                buy_price = float(holding['买入价'])
+                portfolios.append({
+                    'code': code,
+                    'name': holding.get('名称') or holding.get('name', ''),
+                    'buy_price': buy_price,
+                    'stop_loss': buy_price * 0.97,
+                    'profit_target': buy_price * 1.05,
+                    'track': holding.get('策略赛道', '')
+                })
+
+        targets = st.session_state.get("last_scan_targets", [])
+        st.caption(f"持仓股: {len(portfolios)} 只 | 今日推荐: {len(targets)} 只")
+
         if st.session_state.monitor_thread is None:
-            # 直接加载持仓（确保即使未扫描也有持仓数据）
-            portfolio_df = load_portfolio()
-            portfolios = []
-            if not portfolio_df.empty:
-                for _, holding in portfolio_df.iterrows():
-                    # 构建监控所需的持仓字典
-                    code_raw = holding.get('代码') or holding.get('code', '')
-                    code = str(code_raw).replace("'", "").strip().zfill(6)
-                    buy_price = float(holding['买入价'])
-                    # 根据策略设定默认止盈止损（也可在 Portfolio 表中存储个性化参数）
-                    stop_loss = buy_price * 0.97
-                    profit_target = buy_price * 1.05
-                    portfolios.append({
-                        'code': code,
-                        'name': holding.get('名称') or holding.get('name', ''),
-                        'buy_price': buy_price,
-                        'stop_loss': stop_loss,
-                        'profit_target': profit_target,
-                        'track': holding.get('策略赛道', '')
-                    })
-
-            # 获取扫描目标（如果之前扫描过则使用，否则为空）
-            targets = st.session_state.get("last_scan_targets", [])
-
             if targets or portfolios:
+                # 启动监控线程
                 monitor = RealtimeMonitor(
                     targets, portfolios,
                     tickflow_api_key=TICKFLOW_API_KEY,
@@ -1986,11 +1985,14 @@ if "monitor_thread" not in st.session_state:
                 )
                 monitor.start()
                 st.session_state.monitor_thread = monitor
-                st.success(f"监控已启动！持仓 {len(portfolios)} 只，扫描目标 {len(targets)} 只")
+                st.success(f"✅ 监控已启动！订阅 {len(monitor.tf_symbols)} 只标的")
+                st.info("WebSocket 连接中... 若钉钉收到行情消息则正常")
             else:
-                st.warning("没有可监控的目标，请先运行全市场扫描或确保 Portfolio 表中有持仓")
+                st.warning("没有可监控的目标。请先运行全市场扫描，或确保 Portfolio 表中有持仓")
+        else:
+            st.info("监控线程已在运行中")
     else:
         if st.session_state.monitor_thread is not None:
             st.session_state.monitor_thread.stop()
             st.session_state.monitor_thread = None
-            st.info("监控已停止")
+            st.success("监控已停止")
