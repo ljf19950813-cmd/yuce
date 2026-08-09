@@ -1525,6 +1525,8 @@ elif scan_phase == "scan":
     CONFIG["TOP_N_NORMAL"] = st.session_state.get("scan_top_n_normal", CONFIG["TOP_N_NORMAL"])
     CONFIG["TOP_N_DEMON"] = st.session_state.get("scan_top_n_demon", CONFIG["TOP_N_DEMON"])
     normal_results, demon_results, defense_results = [], [], []
+    st.write("🔑 当前热点关键词：", st.session_state.get("hot_keywords", ""))
+    
     with st.spinner("获取日线数据..."):
         df, market_avg_pct = get_data_tickflow()
         if df is None: st.error("数据获取失败"); st.stop()
@@ -1573,16 +1575,19 @@ elif scan_phase == "scan":
             history = get_history_context(tf, row['tf_code'])
             reasoning, final = analyze_with_llm(row.to_dict(), minute_features.get(row['tf_code'],''), market_context, history, "normal")
             normal_results.append({'row':row,'reasoning':reasoning,'final':final}); time.sleep(1)
+            st.write(f"📌 {row['name']} is_hot: {row.get('is_hot', False)}")
         for _, row in demon_df.iterrows():
             current+=1; progress_bar.progress(current/total_tasks)
             history = get_history_context(tf, row['tf_code'])
             reasoning, final = analyze_with_llm(row.to_dict(), minute_features.get(row['tf_code'],''), market_context, history, "demon")
             demon_results.append({'row':row,'reasoning':reasoning,'final':final}); time.sleep(1)
+            st.write(f"📌 {row['name']} is_hot: {row.get('is_hot', False)}")
         for _, row in defense_df.iterrows():
             current+=1; progress_bar.progress(current/total_tasks)
             history = get_history_context(tf, row['tf_code'])
             reasoning, final = analyze_with_llm(row.to_dict(), minute_features.get(row['tf_code'],''), market_context, history, "defense")
             defense_results.append({'row':row,'reasoning':reasoning,'final':final}); time.sleep(1)
+            st.write(f"📌 {row['name']} is_hot: {row.get('is_hot', False)}")
         progress_bar.empty()
 
         if normal_results or demon_results or defense_results:
