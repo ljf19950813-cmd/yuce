@@ -916,37 +916,48 @@ def run_autopsy(safe_dates):
         if pending.empty:
             st.info("暂无T+2日可验尸的记录")
             return
-        # 每次最多处理 10 条，防止 API 超额
-        if len(pending) > 10:
-            pending = pending.head(10)
-            st.info("待验尸记录超过 10 条，本次仅处理前 10 条")
 
-        st.info(f"🔍 检测到 {len(pending)} 条可验尸记录（T+2日），开始模拟卖出...")
+    # 每次最多处理 10 条
+    if len(pending) > 10:
+        pending = pending.head(10)
+        st.info("待验尸记录超过 10 条，本次仅处理前 10 条")
 
-        symbols_to_check = pending['代码'].unique().tolist()
-        if not tf: return
+    st.info(f"🔍 检测到 {len(pending)} 条可验尸记录（T+2日），开始模拟卖出...")
 
-        t1_data = get_tickflow_data_for_symbols_offset(tf, symbols_to_check, offset_days=1)   # T+1日（昨天）
-        t2_data = get_tickflow_data_for_symbols_offset(tf, symbols_to_check, offset_days=0)   # T+2日（最新）
+    symbols_to_check = pending['代码'].unique().tolist()
+    if not tf:
+        return
 
-        if t1_data.empty and t2_data.empty:
-            st.warning("无法获取T+1/T+2行情数据")
-            return
+    t1_data = get_tickflow_data_for_symbols_offset(tf, symbols_to_check, offset_days=1)
+    t2_data = get_tickflow_data_for_symbols_offset(tf, symbols_to_check, offset_days=0)
 
-        # 获取列号
-        try:
-            col_high = header.index('T+1日最高') + 1
-            col_low = header.index('T+1日最低') + 1
-            col_close = header.index('T+1日收盘') + 1
-            col_t2_open = header.index('T+2日开盘') + 1 if 'T+2日开盘' in header else None
-            col_t2_avg = header.index('T+2日均价') + 1 if 'T+2日均价' in header else None
-            col_sell_price = header.index('模拟卖出价') + 1 if '模拟卖出价' in header else None
-            col_result = header.index('验尸结果') + 1
-        except ValueError as e:
-            st.warning(f"表头缺失关键列: {e}")
-            return
+    if t1_data.empty and t2_data.empty:
+        st.warning("无法获取T+1/T+2行情数据")
+        return
 
-        update_count = 0
+    # 打开工作表
+    try:
+        sh = gc.open_by_url(spreadsheet_url)
+        worksheet = sh.worksheet(SHEET_NAME)
+    except Exception as e:
+        st.warning(f"无法打开工作表: {e}")
+        return
+
+    # 获取列号
+    try:
+        col_high = header.index('T+1日最高') + 1
+        col_low = header.index('T+1日最低') + 1
+        col_close = header.index('T+1日收盘') + 1
+        col_t2_open = header.index('T+2日开盘') + 1 if 'T+2日开盘' in header else None
+        col_t2_avg = header.index('T+2日均价') + 1 if 'T+2日均价' in header else None
+        col_sell_price = header.index('模拟卖出价') + 1 if '模拟卖出价' in header else None
+        col_result = header.index('验尸结果') + 1
+    except ValueError as e:
+        st.warning(f"表头缺失关键列: {e}")
+        return
+
+    update_count = 0
+    try:
         for idx, row in pending.iterrows():
             code = str(row['代码']).strip().replace("'", "").replace(" ", "")
             t1_row = t1_data[t1_data['code'].astype(str).str.strip() == code]
@@ -982,7 +993,7 @@ def run_autopsy(safe_dates):
 
                 ai_result = ai_autopsy_record_v2(analysis_text, t1_dict, t2_dict, stock_name, code, mode)
                 if ai_result:
-                    final_result = f"🤖 T+2验尸:\n{ai_result}"   # 完整输出，不截断
+                    final_result = f"🤖 T+2验尸:\n{ai_result}"
                 else:
                     if pct > 5:
                         final_result = f"🏆 大肉 +{pct:.1f}% (卖{sell_price:.2f})"
@@ -993,7 +1004,7 @@ def run_autopsy(safe_dates):
                     else:
                         final_result = f"❌ 亏损 {pct:.1f}%"
 
-            # 写入（带重试机制）
+            # 写入（带重试）
             sheet_row = idx + 2
             success = False
             for attempt in range(3):
@@ -1020,7 +1031,7 @@ def run_autopsy(safe_dates):
                 update_count += 1
             else:
                 st.error(f"写入 {code} 失败（已重试3次）")
-            time.sleep(0.5)  # 额外延迟，降低请求频率
+            time.sleep(0.5)
 
         if update_count > 0:
             st.success(f"💀 T+2验尸完成，更新 {update_count} 条")
