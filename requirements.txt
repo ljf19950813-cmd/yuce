@@ -9,3 +9,6 @@ prettytable
 numpy
 gspread
 oauth2client
+streamlit-autorefresh
+requests
+websocket-client
