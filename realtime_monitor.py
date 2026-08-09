@@ -43,39 +43,45 @@ class RealtimeMonitor(threading.Thread):
 
     async def async_run(self):
         url = f"wss://api.tickflow.org/v1/ws/stream?api_key={self.tickflow_api_key}"
-        try:
-            async with websockets.connect(url) as ws:
-                with self.status_lock:
-                    self.status_info["connected"] = True
-                    self.status_info["error"] = None
+        while not self._stop_event.is_set():
+            try:
+                async with websockets.connect(url) as ws:
+                    with self.status_lock:
+                        self.status_info["connected"] = True
+                        self.status_info["error"] = None
 
-                # 订阅行情
-                if self.tf_symbols:
-                    await ws.send(json.dumps({
-                        "op": "subscribe",
-                        "channel": "quotes",
-                        "symbols": self.tf_symbols
-                    }))
+                    # 重新订阅（断线重连后必须重发）
+                    if self.tf_symbols:
+                        await ws.send(json.dumps({
+                            "op": "subscribe",
+                            "channel": "quotes",
+                            "symbols": self.tf_symbols
+                        }))
 
-                while not self._stop_event.is_set():
-                    try:
-                        raw = await asyncio.wait_for(ws.recv(), timeout=1.0)
-                        msg = json.loads(raw)
-                        if msg.get("op") == "quotes":
+                    # 消息处理循环
+                    while not self._stop_event.is_set():
+                        try:
+                            raw = await asyncio.wait_for(ws.recv(), timeout=1.0)
+                            msg = json.loads(raw)
+                            if msg.get("op") == "quotes":
+                                with self.status_lock:
+                                    self.status_info["last_msg_time"] = datetime.now().strftime("%H:%M:%S")
+                                for q in msg.get("data", []):
+                                    self.handle_quote(q)
+                        except asyncio.TimeoutError:
+                            continue
+                        except Exception as e:
                             with self.status_lock:
-                                self.status_info["last_msg_time"] = datetime.now().strftime("%H:%M:%S")
-                            for q in msg.get("data", []):
-                                self.handle_quote(q)
-                    except asyncio.TimeoutError:
-                        continue
-                    except Exception as e:
-                        with self.status_lock:
-                            self.status_info["error"] = str(e)
-                        break
-        except Exception as e:
-            with self.status_lock:
-                self.status_info["connected"] = False
-                self.status_info["error"] = str(e)
+                                self.status_info["error"] = str(e)
+                            break   # 连接异常，退出内层循环，准备重连
+            except Exception as e:
+                with self.status_lock:
+                    self.status_info["connected"] = False
+                    self.status_info["error"] = str(e)
+
+            # 等待重连（若未主动停止）
+            if not self._stop_event.is_set():
+                await asyncio.sleep(5)   # 5 秒后自动重试
 
     def handle_quote(self, data):
         symbol = data.get("symbol", "")
