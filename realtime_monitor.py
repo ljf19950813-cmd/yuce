@@ -26,6 +26,11 @@ class RealtimeMonitor(threading.Thread):
         self.MARKET_OPEN_HOUR = 9
         self.MARKET_OPEN_MINUTE = 30
         self.CONFIRM_WINDOW_SECONDS = 5 * 60
+        # 用于向 Streamlit 主线程传递状态（线程安全）
+        self.status_info = {"connected": False, "last_msg_time": None, "error": None}
+        self.latest_quotes = []   # 存储最近 5 条行情摘要
+        self.max_quotes = 5
+        self.status_lock = threading.Lock()
 
     def run(self):
         asyncio.run(self.async_run())
@@ -43,8 +48,13 @@ class RealtimeMonitor(threading.Thread):
 
     async def async_run(self):
         url = f"wss://api.tickflow.org/v1/ws/stream?api_key={self.tickflow_api_key}"
-        async with websockets.connect(url) as ws:
-            await ws.send(json.dumps({
+        try:
+            async with websockets.connect(url) as ws:
+                with self.status_lock:
+                    self.status_info["connected"] = True
+                    self.status_info["error"] = None
+                # 发送订阅...
+                await ws.send(json.dumps({...}))
                 "op": "subscribe",
                 "channel": "quotes",
                 "symbols": self.tf_symbols
@@ -58,9 +68,10 @@ class RealtimeMonitor(threading.Thread):
                             self.handle_quote(q)
                 except asyncio.TimeoutError:
                     continue
-                except Exception as e:
-                    print(f"WebSocket 错误: {e}")
-                    break
+        except Exception as e:
+            with self.status_lock:
+                self.status_info["connected"] = False
+                self.status_info["error"] = str(e)
 
     def handle_quote(self, data):
         symbol = data["symbol"]
@@ -70,7 +81,18 @@ class RealtimeMonitor(threading.Thread):
             return
         name = data.get("ext", {}).get("name", symbol)
         chg = data.get("ext", {}).get("change_pct", 0) * 100
-
+        summary = {
+            'symbol': symbol,
+            'name': data.get('ext', {}).get('name', symbol),
+            'price': price,
+            'chg': round(data.get('ext', {}).get('change_pct', 0) * 100, 2),
+            'time': datetime.now().strftime('%H:%M:%S')
+        }
+        with self.status_lock:
+            self.latest_quotes.append(summary)
+            if len(self.latest_quotes) > self.max_quotes:
+                self.latest_quotes.pop(0)
+                
         # 1. 买入确认检查（开盘时段）
         for target in self.target_dicts[:]:
             if target['code'] == code:
