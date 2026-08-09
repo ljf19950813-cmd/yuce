@@ -1700,26 +1700,23 @@ if run_tail:
     else:
         st.info("无尾盘目标")
 
-# ================= 实时监控（主界面） =================
+# ================= 实时监控（独立按钮） =================
 st.divider()
 st.header("📡 盘中实时监控")
 if "monitor_thread" not in st.session_state:
     st.session_state.monitor_thread = None
 
-# 记录监控开关的旧状态，用于检测变化
-if "prev_enable_monitor" not in st.session_state:
-    st.session_state.prev_enable_monitor = False
+col1, col2 = st.columns(2)
+with col1:
+    start_monitor = st.button("▶️ 启动实时监控", use_container_width=True)
+with col2:
+    stop_monitor = st.button("⏹️ 停止实时监控", use_container_width=True)
 
-enable_monitor = st.checkbox("启动 WebSocket 实时提醒（钉钉+AI）")
+if start_monitor:
+    # 强制清除任何残留的扫描阶段，防止误触发
+    st.session_state.scan_phase = None
 
-# 如果监控开关状态变化，清除扫描阶段，防止误触发扫描
-if enable_monitor != st.session_state.prev_enable_monitor:
-    st.session_state.prev_enable_monitor = enable_monitor
-    if st.session_state.get("scan_phase") is not None:
-        st.session_state.scan_phase = None
-    st.rerun()
-
-if enable_monitor:
+    # 加载持仓和扫描目标
     portfolio_df = load_portfolio()
     portfolios = []
     if portfolio_df is not None and not portfolio_df.empty:
@@ -1751,31 +1748,36 @@ if enable_monitor:
             st.success(f"✅ 监控已启动！持仓 {len(portfolios)} 只，推荐 {len(targets)} 只")
         else:
             st.warning("没有可监控的目标，请先运行全市场扫描或确保 Portfolio 表中有持仓")
+    else:
+        st.info("监控线程已在运行中")
 
-    if st.button("🔄 刷新监控状态", key="refresh_monitor"):
-        st.rerun()
-
-    if st.session_state.monitor_thread is not None:
-        monitor = st.session_state.monitor_thread
-        with monitor.status_lock:
-            connected = monitor.status_info.get("connected", False)
-            error = monitor.status_info.get("error", "")
-            quotes = list(monitor.latest_quotes)
-        if connected:
-            st.success("✅ WebSocket 已连接")
-            if quotes:
-                st.write("**最近行情：**")
-                for q in reversed(quotes):
-                    st.write(f"{q['time']} {q['name']} {q['price']:.2f} {q['chg']:+.2f}%")
-            else:
-                st.caption("尚未收到行情数据（可能非交易时段）")
-        else:
-            if error:
-                st.error(f"❌ 连接失败：{error}")
-            else:
-                st.info("⏳ 正在连接 WebSocket ...")
-else:
+if stop_monitor:
     if st.session_state.monitor_thread is not None:
         st.session_state.monitor_thread.stop()
         st.session_state.monitor_thread = None
         st.success("监控已停止")
+    else:
+        st.info("当前没有运行中的监控线程")
+
+# 显示监控状态（如果线程存在）
+if st.session_state.monitor_thread is not None:
+    monitor = st.session_state.monitor_thread
+    with monitor.status_lock:
+        connected = monitor.status_info.get("connected", False)
+        error = monitor.status_info.get("error", "")
+        quotes = list(monitor.latest_quotes)
+    if connected:
+        st.success("✅ WebSocket 已连接")
+        if quotes:
+            st.write("**最近行情：**")
+            for q in reversed(quotes):
+                st.write(f"{q['time']} {q['name']} {q['price']:.2f} {q['chg']:+.2f}%")
+        else:
+            st.caption("尚未收到行情数据（可能非交易时段）")
+    else:
+        if error:
+            st.error(f"❌ 连接失败：{error}")
+        else:
+            st.info("⏳ 正在连接 WebSocket ...")
+else:
+    st.info("监控未启动")
