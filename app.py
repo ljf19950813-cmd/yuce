@@ -1945,75 +1945,75 @@ if run_tail:
     else:
         st.info("无尾盘目标")
 
-    # ========== 实时监控（带手动状态刷新） ==========
-    st.divider()
-    st.header("📡 盘中实时监控")
-    if "monitor_thread" not in st.session_state:
+st.divider()
+st.header("📡 盘中实时监控")
+if "monitor_thread" not in st.session_state:
+    st.session_state.monitor_thread = None
+
+enable_monitor = st.checkbox("启动 WebSocket 实时提醒（钉钉+AI）")
+
+if enable_monitor:
+        # 加载持仓数据
+    portfolio_df = load_portfolio()
+    portfolios = []
+    if portfolio_df is not None and not portfolio_df.empty:
+        for _, holding in portfolio_df.iterrows():
+            code_raw = holding.get('代码') or holding.get('code', '')
+            code = str(code_raw).replace("'", "").strip().zfill(6)
+            buy_price = float(holding['买入价'])
+            portfolios.append({
+                'code': code,
+                'name': holding.get('名称') or holding.get('name', ''),
+                'buy_price': buy_price,
+                'stop_loss': buy_price * 0.97,
+                'profit_target': buy_price * 1.05,
+                'track': holding.get('策略赛道', '')
+            })
+
+    targets = st.session_state.get("last_scan_targets", [])
+
+    if st.session_state.monitor_thread is None:
+        if targets or portfolios:
+            monitor = RealtimeMonitor(
+                targets, portfolios,
+                tickflow_api_key=TICKFLOW_API_KEY,
+                dingtalk_webhook=DINGTALK_WEBHOOK,
+                llm_client=llm_client,
+                llm_config=CONFIG
+            )
+            monitor.start()
+            st.session_state.monitor_thread = monitor
+            st.success(f"✅ 监控已启动！持仓 {len(portfolios)} 只，推荐 {len(targets)} 只")
+        else:
+            st.warning("没有可监控的目标，请先运行全市场扫描或确保 Portfolio 表中有持仓")
+
+        # 刷新状态按钮
+    if st.button("🔄 刷新监控状态", key="refresh_monitor"):
+        st.rerun()
+
+        # 显示连接状态和行情
+    if st.session_state.monitor_thread is not None:
+        monitor = st.session_state.monitor_thread
+        with monitor.status_lock:
+            connected = monitor.status_info.get("connected", False)
+            error = monitor.status_info.get("error", "")
+            quotes = list(monitor.latest_quotes)
+
+        if connected:
+            st.success("✅ WebSocket 已连接")
+            if quotes:
+                st.write("**最近行情：**")
+                for q in reversed(quotes):
+                    st.write(f"{q['time']} {q['name']} {q['price']:.2f} {q['chg']:+.2f}%")
+            else:
+                st.caption("尚未收到行情数据（可能非交易时段）")
+        else:
+            if error:
+                st.error(f"❌ 连接失败：{error}")
+            else:
+                st.info("⏳ 正在连接 WebSocket ...")
+else:
+    if st.session_state.monitor_thread is not None:
+        st.session_state.monitor_thread.stop()
         st.session_state.monitor_thread = None
-
-    enable_monitor = st.checkbox("启动 WebSocket 实时提醒（钉钉+AI）")
-
-    if enable_monitor:
-        portfolio_df = load_portfolio()
-        portfolios = []
-        if not portfolio_df.empty:
-            for _, holding in portfolio_df.iterrows():
-                code_raw = holding.get('代码') or holding.get('code', '')
-                code = str(code_raw).replace("'", "").strip().zfill(6)
-                buy_price = float(holding['买入价'])
-                portfolios.append({
-                    'code': code,
-                    'name': holding.get('名称') or holding.get('name', ''),
-                    'buy_price': buy_price,
-                    'stop_loss': buy_price * 0.97,
-                    'profit_target': buy_price * 1.05,
-                    'track': holding.get('策略赛道', '')
-                })
-
-        targets = st.session_state.get("last_scan_targets", [])
-
-        if st.session_state.monitor_thread is None:
-            if targets or portfolios:
-                monitor = RealtimeMonitor(
-                    targets, portfolios,
-                    tickflow_api_key=TICKFLOW_API_KEY,
-                    dingtalk_webhook=DINGTALK_WEBHOOK,
-                    llm_client=llm_client,
-                    llm_config=CONFIG
-                )
-                monitor.start()
-                st.session_state.monitor_thread = monitor
-                st.success(f"✅ 监控已启动！持仓 {len(portfolios)} 只，推荐 {len(targets)} 只")
-            else:
-                st.warning("没有可监控的目标，请先运行全市场扫描或确保 Portfolio 表中有持仓")
-
-        # 状态刷新按钮
-        if st.button("🔄 刷新监控状态", use_container_width=True):
-            st.experimental_rerun()
-
-        # 显示当前状态和行情
-        if st.session_state.monitor_thread is not None:
-            monitor = st.session_state.monitor_thread
-            with monitor.status_lock:
-                connected = monitor.status_info["connected"]
-                error = monitor.status_info["error"]
-                quotes = list(monitor.latest_quotes)
-
-            if connected:
-                st.success("✅ WebSocket 已连接")
-                if quotes:
-                    st.write("**最近行情：**")
-                    for q in reversed(quotes):
-                        st.write(f"{q['time']} {q['name']} {q['price']:.2f} {q['chg']:+.2f}%")
-                else:
-                    st.caption("尚未收到行情数据（可能非交易时段）")
-            else:
-                if error:
-                    st.error(f"❌ 连接失败：{error}")
-                else:
-                    st.info("⏳ 正在连接 WebSocket ...")
-    else:
-        if st.session_state.monitor_thread is not None:
-            st.session_state.monitor_thread.stop()
-            st.session_state.monitor_thread = None
-            st.success("监控已停止")
+        st.success("监控已停止")
