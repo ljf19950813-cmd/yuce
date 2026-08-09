@@ -895,25 +895,27 @@ def save_today_predictions(normal_res, demon_res, defense_res, safe_dates):
             st.error(f"保存失败: {e}")
 
 def run_autopsy(safe_dates):
-    if not gc or not spreadsheet_url: return
-    # 优先使用缓存，不额外读表
+    if not gc or not spreadsheet_url:
+        return
+    # 使用缓存，避免直接读表
     data = st.session_state.get("sheet1_data", [])
-    if not data:
+    if not data or len(data) < 2:
         return
     header = data[0]
     df_history = pd.DataFrame(data[1:], columns=header)
-    if df_history.empty: return
-    if '验尸结果' not in df_history.columns: return
+    if df_history.empty:
+        return
+    if '验尸结果' not in df_history.columns:
+        return
     pending = df_history[df_history['验尸结果'] == '待验尸'].copy()
-    if pending.empty: return
+    if pending.empty:
+        return
     if '日期' in pending.columns:
         t_minus_2 = safe_dates['day_before']
         pending = pending[pending['日期'].astype(str) <= t_minus_2]
         if pending.empty:
             st.info("暂无T+2日可验尸的记录")
             return
-    # ... 后面的代码保持不变（但需要删除原来强制刷新缓存的语句）
-
         # 每次最多处理 10 条，防止 API 超额
         if len(pending) > 10:
             pending = pending.head(10)
