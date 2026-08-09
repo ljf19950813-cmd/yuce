@@ -104,6 +104,11 @@ if "base_anti_hallucination_rules" not in st.session_state:
 3. 必须结合提供的【历史趋势快照】进行分析，严禁脱离数据空谈。"""
     st.session_state.base_anti_hallucination_rules = default_rules
 
+if "today_saved" not in st.session_state:
+    st.session_state.today_saved = ""
+if "monitor_thread" not in st.session_state:
+    st.session_state.monitor_thread = None
+
 # ================= 安全日期生成器 =================
 def get_safe_trade_dates():
     holidays_2026 = {
@@ -169,8 +174,6 @@ def load_hot_topics():
         if not data:
             return []
         df = pd.DataFrame(data)
-
-        # 自动识别时间列和确认列
         time_col = confirm_col = None
         for col in df.columns:
             if '更新' in str(col) or '时间' in str(col) or '日期' in str(col):
@@ -179,13 +182,10 @@ def load_hot_topics():
                 confirm_col = col
         if time_col is None or confirm_col is None:
             return []
-
-        # 筛选最新一批且未确认的
         latest_time = df[time_col].max()
         mask = (df[time_col] == latest_time) & (df[confirm_col].astype(str).str.strip() == '否')
         latest_topics = df[mask]
         if latest_topics.empty:
-            # 如果没有未确认的，则返回最新一批全部（供查看）
             latest_topics = df[df[time_col] == latest_time]
         return latest_topics.to_dict('records')
     except Exception as e:
@@ -196,13 +196,10 @@ def add_hotspot_flag(stock_df, confirmed_keywords_str):
     if not confirmed_keywords_str or stock_df is None or stock_df.empty:
         stock_df['is_hot'] = False
         return stock_df
-
     kw_list = [k.strip() for k in confirmed_keywords_str.split(',') if k.strip()]
     if not kw_list:
         stock_df['is_hot'] = False
         return stock_df
-
-    # 概念映射表（完整版）
     concept_map = {
         '低空经济': ['无人机', '飞行汽车', '空管', '航空', 'evtol'],
         'AI算力': ['光模块', '服务器', '算力', '数据中心', 'cpo', 'gpu'],
@@ -245,23 +242,17 @@ def add_hotspot_flag(stock_df, confirmed_keywords_str):
         '跨境电商': ['跨境电商', '外贸', '物流'],
         '数字货币': ['数字货币', '区块链'],
     }
-
     expanded_kw = set()
     for kw in kw_list:
         if kw in concept_map:
             expanded_kw.update(concept_map[kw])
         else:
             expanded_kw.add(kw)
-
     pattern = '|'.join(expanded_kw)
     stock_df['is_hot'] = stock_df['name'].str.contains(pattern, case=False, na=False)
     return stock_df
     
 def filter_recent_surge(df, days=5, max_pct=30):
-    """
-    剔除近 days 个交易日累计涨幅超过 max_pct% 的股票。
-    需要 df 包含 'tf_code' 列，利用日K线计算。
-    """
     if df is None or df.empty:
         return df
     keep = []
@@ -269,16 +260,15 @@ def filter_recent_surge(df, days=5, max_pct=30):
         try:
             k = tf.klines.get(row['tf_code'], period='1d', count=days+1, as_dataframe=True)
             if k is not None and len(k) >= days+1:
-                # 计算近days日累计涨幅（不含当日）
                 start_close = float(k.iloc[-(days+1)]['close'])
-                end_close = float(k.iloc[-2]['close'])   # 昨日收盘
+                end_close = float(k.iloc[-2]['close'])
                 if start_close > 0:
                     pct = (end_close - start_close) / start_close * 100
                     if pct > max_pct:
-                        continue  # 剔除
+                        continue
             keep.append(row)
         except:
-            keep.append(row)   # 数据异常时保留，避免误杀
+            keep.append(row)
     result = pd.DataFrame(keep)
     if len(result) < len(df):
         st.caption(f"🚫 近{days}日涨幅>{max_pct}%剔除 {len(df)-len(result)} 只")
@@ -291,7 +281,6 @@ def get_data_tickflow():
         logging.info("🚀 获取全市场 A 股日线快照...")
         df = tf.quotes.get(universes=["CN_Equity_A"], as_dataframe=True)
         if df is None or df.empty: return None, 0.0
-
         df['tf_code'] = df['symbol'].astype(str)
         df['code'] = df['tf_code'].str.split('.').str[0].str.zfill(6)
         df['name'] = df['ext.name'].astype(str) if 'ext.name' in df.columns else '未知'
@@ -408,13 +397,11 @@ def get_tickflow_data_for_symbols(tf_client, symbols_list):
         s = str(s).strip()
         if '.' in s: parsed_symbols.append(f"{s.split('.')[1]}.{s.split('.')[0]}")
         else: parsed_symbols.append(f"{s}.SH" if s.startswith('6') else f"{s}.SZ")
-
     valid_rows = []
     for tf_code in parsed_symbols:
         try:
             df_k = tf_client.klines.get(tf_code, period="1d", count=2, as_dataframe=True)
             if df_k is None or df_k.empty or len(df_k) < 2: continue
-            # 不再调用 adjust_kline
             latest, prev = df_k.iloc[-1], df_k.iloc[-2]
             close_today = float(latest.get('close', latest.get('last_price')))
             close_prev = float(prev.get('close', prev.get('last_price')))
@@ -516,7 +503,6 @@ def calculate_real_vol_ratio(candidate_df):
                 if today_close < ma20:
                     warning += f"⚠️ 股价跌破MA20({ma20:.2f})；"
 
-                # 筹码断层检测（只生成警告，不改变量比）
                 chip_gap_found = False
                 chip_gap_price = 0.0
                 for i in range(-10, -1):
@@ -539,7 +525,6 @@ def calculate_real_vol_ratio(candidate_df):
             warning += "⚠️ 数据异常；"
         real_vol_ratios.append(vol_ratio)
         chip_warnings.append(warning.strip("；"))
-
     candidate_df['vol_ratio'] = real_vol_ratios
     candidate_df['chip_warning'] = chip_warnings
     return candidate_df
@@ -695,15 +680,11 @@ if "active_prompts" not in st.session_state:
     }
 
 def analyze_with_llm(stock_dict, minute_feature_text, market_context, history_context, mode="normal"):
-
     if not llm_client: return "无AI", "无AI"
-
     active_prompts = st.session_state.active_prompts
     system_p = active_prompts.get(mode, PROMPT_NORMAL)
-
     chip_warning = stock_dict.get('chip_warning', '')
     warning_info = f"\n【筹码/趋势警告】: {chip_warning}" if chip_warning else ""
-
     price_info = f"""
 【真实价格锚点】
 - 当前价: {stock_dict.get('close', '未知')} 元
@@ -711,7 +692,6 @@ def analyze_with_llm(stock_dict, minute_feature_text, market_context, history_co
 - 今日最高: {stock_dict.get('high', '未知')} 元
 - 昨日收盘: {stock_dict.get('pre_close', '0.0')} 元
 """
-    # 热点提示（如果该股属于用户确认的热点板块）
     hot_hint = ""
     if stock_dict.get('is_hot'):
         hot_hint = "🔥 该股属于今日确认的热点板块，请结合热点持续性给予仓位和信心评估。"
@@ -757,14 +737,10 @@ def generate_auction_checklist(stock_dict, analysis_text, track=""):
     name = stock_dict['name']
     close_price = stock_dict['close']
     conditions = []
-
-    # 1. 竞价量能建议（软条件）
     yesterday_vol = stock_dict.get('volume', 0)
     min_auction_vol = round(yesterday_vol * 0.015) if yesterday_vol > 0 else 0
     if min_auction_vol > 0:
         conditions.append(f"⚠️ 建议竞价成交量 ≥ {min_auction_vol}手（低于此值谨慎追高）")
-
-    # 2. 高开价格参考（从三档买点中提取）
     try:
         block_match = re.search(r'【三档买点】\s*\n(.*?)(?=\n\s*\n|\Z)', analysis_text, re.DOTALL)
         if block_match:
@@ -780,21 +756,17 @@ def generate_auction_checklist(stock_dict, analysis_text, track=""):
                     )
     except:
         pass
-
-    # 3. 低开限制（根据策略动态调整）
     if '妖股' in track:
         low_limit_pct = 5.0
         desc = "妖股允许大幅低开，但需竞价量能配合"
     elif '逆风' in track:
         low_limit_pct = 3.0
         desc = "逆风环境低开3%以上放弃"
-    else:  # 缩量潜伏及其他
+    else:
         low_limit_pct = 2.5
         desc = "缩量潜伏低开2.5%以上放弃"
-
     low_limit = round(close_price * (1 - low_limit_pct/100), 2)
     conditions.append(f"❌ 低开幅度超过{low_limit_pct}% (低于{low_limit}元) → 放弃买入（{desc}）")
-
     return {'code': code, 'name': name, 'conditions': conditions, 'active': True}
 
 # ================= 9. 价格提取与评级 =================
@@ -832,33 +804,24 @@ def extract_rating_from_text(final_text):
     return section_match.group(1) if section_match else "未评级"
 
 def validate_prediction(final_text, close_price):
-    """硬校验：买点、止损是否在合理范围内"""
     buy = extract_price_from_text(final_text, close_price, "buy")
     stop = extract_price_from_text(final_text, close_price, "stop")
-    if buy <= 0 or stop <= 0:
-        return False
-    if not (close_price * 0.85 <= buy <= close_price * 1.15):
-        return False
-    if not (close_price * 0.85 <= stop <= close_price * 1.15):
-        return False
-    if stop >= buy:  # 止损必须低于买点
-        return False
+    if buy <= 0 or stop <= 0: return False
+    if not (close_price * 0.85 <= buy <= close_price * 1.15): return False
+    if not (close_price * 0.85 <= stop <= close_price * 1.15): return False
+    if stop >= buy: return False
     return True
     
 def save_today_predictions(normal_res, demon_res, defense_res, safe_dates):
     if not gc or not spreadsheet_url: return
-    # 通过 session state 防止同一天重复写入（不读表）
     today_str = safe_dates['today']
     if st.session_state.get("today_saved") == today_str:
         st.warning("今日已保存过扫描结果，跳过重复写入")
         return
-    try:
-        sh = gc.open_by_url(spreadsheet_url)
-        worksheet = sh.worksheet(SHEET_NAME)
-    except Exception as e:
-        st.error(f"无法打开工作表 {SHEET_NAME}: {e}")
+    worksheet = st.session_state.get("sheet1_ws")
+    if worksheet is None:
+        st.error("Sheet1 工作表未初始化")
         return
-
     all_results = []
     for res_list, track_name in [(normal_res, "缩量潜伏"), (demon_res, "主板妖股"), (defense_res, "逆风突破")]:
         for item in res_list:
@@ -875,7 +838,6 @@ def save_today_predictions(normal_res, demon_res, defense_res, safe_dates):
             if not validate_prediction(final_text, close_price):
                 st.caption(f"⚠️ {row['name']}({row['code']}) 买点/止损不合理，已跳过保存")
                 continue
-
             all_results.append([
                 safe_dates['today'],
                 row['name'],
@@ -886,70 +848,49 @@ def save_today_predictions(normal_res, demon_res, defense_res, safe_dates):
                 round(stop_price,2),
                 rating,
                 final_text,
-                None, None, None,   # T+1日最高/低/收
-                None, None, None,   # T+2日开盘/均价/模拟卖出价
-                "待验尸",           # 验尸结果
-                conditions_str      # 竞价条件
+                None, None, None,
+                None, None, None,
+                "待验尸",
+                conditions_str
             ])
     if all_results:
         try:
             worksheet.append_rows(all_results, value_input_option='USER_ENTERED')
             st.success(f"已保存 {len(all_results)} 条")
             st.session_state.sheet1_refresh = True
-            st.session_state.today_saved = today_str   # 标记已保存
+            st.session_state.today_saved = today_str
         except Exception as e:
             st.error(f"保存失败: {e}")
 
 def run_autopsy(safe_dates):
-    if not gc or not spreadsheet_url:
-        return
-    # 使用缓存，避免直接读表
+    if not gc or not spreadsheet_url: return
     data = st.session_state.get("sheet1_data", [])
-    if not data or len(data) < 2:
-        return
+    if not data or len(data) < 2: return
     header = data[0]
     df_history = pd.DataFrame(data[1:], columns=header)
-    if df_history.empty:
-        return
-    if '验尸结果' not in df_history.columns:
-        return
+    if df_history.empty: return
+    if '验尸结果' not in df_history.columns: return
     pending = df_history[df_history['验尸结果'] == '待验尸'].copy()
-    if pending.empty:
-        return
+    if pending.empty: return
     if '日期' in pending.columns:
         t_minus_2 = safe_dates['day_before']
         pending = pending[pending['日期'].astype(str) <= t_minus_2]
         if pending.empty:
             st.info("暂无T+2日可验尸的记录")
             return
-
-    # 每次最多处理 10 条
     if len(pending) > 10:
         pending = pending.head(10)
         st.info("待验尸记录超过 10 条，本次仅处理前 10 条")
-
     st.info(f"🔍 检测到 {len(pending)} 条可验尸记录（T+2日），开始模拟卖出...")
-
     symbols_to_check = pending['代码'].unique().tolist()
-    if not tf:
-        return
-
+    if not tf: return
     t1_data = get_tickflow_data_for_symbols_offset(tf, symbols_to_check, offset_days=1)
     t2_data = get_tickflow_data_for_symbols_offset(tf, symbols_to_check, offset_days=0)
-
     if t1_data.empty and t2_data.empty:
         st.warning("无法获取T+1/T+2行情数据")
         return
-
-    # 打开工作表
-    try:
-        sh = gc.open_by_url(spreadsheet_url)
-        worksheet = sh.worksheet(SHEET_NAME)
-    except Exception as e:
-        st.warning(f"无法打开工作表: {e}")
-        return
-
-    # 获取列号
+    worksheet = st.session_state.get("sheet1_ws")
+    if not worksheet: return
     try:
         col_high = header.index('T+1日最高') + 1
         col_low = header.index('T+1日最低') + 1
@@ -961,7 +902,6 @@ def run_autopsy(safe_dates):
     except ValueError as e:
         st.warning(f"表头缺失关键列: {e}")
         return
-
     update_count = 0
     try:
         for idx, row in pending.iterrows():
@@ -969,34 +909,28 @@ def run_autopsy(safe_dates):
             t1_row = t1_data[t1_data['code'].astype(str).str.strip() == code]
             if t1_row.empty: continue
             t1 = t1_row.iloc[0]
-            t1_high, t1_low, t1_close = t1['high'], t1['low'], t1['close']
-
             t2_row = t2_data[t2_data['code'].astype(str).str.strip() == code]
             if t2_row.empty: continue
             t2 = t2_row.iloc[0]
-            t2_open, t2_high, t2_low, t2_close = t2['open'], t2['high'], t2['low'], t2['close']
-            t2_avg = (t2_high + t2_low + t2_close) / 3
+            t2_avg = (t2['high'] + t2['low'] + t2['close']) / 3
             sell_price = t2_avg
-
             try:
                 ai_buy = float(row['AI建议买点'])
             except:
                 ai_buy = 0.0
             if ai_buy <= 0: continue
-
-            if ai_buy < t1_low - 0.01 or ai_buy > t1_high + 0.01:
+            if ai_buy < t1['low'] - 0.01 or ai_buy > t1['high'] + 0.01:
                 final_result = "⛔ 不可执行：T+1日未触及买点"
             else:
                 pct = (sell_price - ai_buy) / ai_buy * 100
-                t1_dict = {'open': t1['open'], 'high': t1_high, 'low': t1_low, 'close': t1_close,
+                t1_dict = {'open': t1['open'], 'high': t1['high'], 'low': t1['low'], 'close': t1['close'],
                            'pct_chg': t1.get('pct_chg', 0), 'turnover': t1.get('turnover', 0),
                            'vol_ratio': t1.get('vol_ratio', 1)}
-                t2_dict = {'open': t2_open, 'high': t2_high, 'low': t2_low, 'close': t2_close,
+                t2_dict = {'open': t2['open'], 'high': t2['high'], 'low': t2['low'], 'close': t2['close'],
                            'avg': t2_avg, 'sell_price': sell_price, 'pct': pct}
                 analysis_text = row.get('AI分析全文', '')
                 stock_name = row.get('名称', '')
                 mode = row.get('策略赛道', '')
-
                 ai_result = ai_autopsy_record_v2(analysis_text, t1_dict, t2_dict, stock_name, code, mode)
                 if ai_result:
                     final_result = f"🤖 T+2验尸:\n{ai_result}"
@@ -1009,54 +943,34 @@ def run_autopsy(safe_dates):
                         final_result = f"⚠️ 小亏 {pct:.1f}%"
                     else:
                         final_result = f"❌ 亏损 {pct:.1f}%"
-
-            # 写入（带重试）
             sheet_row = idx + 2
-            success = False
             for attempt in range(3):
                 try:
-                    worksheet.update_cell(sheet_row, col_high, round(t1_high, 2))
-                    worksheet.update_cell(sheet_row, col_low, round(t1_low, 2))
-                    worksheet.update_cell(sheet_row, col_close, round(t1_close, 2))
-                    if col_t2_open:
-                        worksheet.update_cell(sheet_row, col_t2_open, round(t2_open, 2))
-                    if col_t2_avg:
-                        worksheet.update_cell(sheet_row, col_t2_avg, round(t2_avg, 2))
-                    if col_sell_price:
-                        worksheet.update_cell(sheet_row, col_sell_price, round(sell_price, 2))
+                    worksheet.update_cell(sheet_row, col_high, round(t1['high'],2))
+                    worksheet.update_cell(sheet_row, col_low, round(t1['low'],2))
+                    worksheet.update_cell(sheet_row, col_close, round(t1['close'],2))
+                    if col_t2_open: worksheet.update_cell(sheet_row, col_t2_open, round(t2['open'],2))
+                    if col_t2_avg: worksheet.update_cell(sheet_row, col_t2_avg, round(t2_avg,2))
+                    if col_sell_price: worksheet.update_cell(sheet_row, col_sell_price, round(sell_price,2))
                     worksheet.update_cell(sheet_row, col_result, final_result)
-                    success = True
                     break
                 except Exception as e:
                     if '429' in str(e):
-                        st.warning(f"写入 {code} 时遇到配额限制，等待 10 秒后重试...")
                         time.sleep(10)
                     else:
                         raise
-            if success:
-                update_count += 1
-            else:
-                st.error(f"写入 {code} 失败（已重试3次）")
-            time.sleep(0.5)
-
+            update_count += 1
+            time.sleep(0.3)
         if update_count > 0:
             st.success(f"💀 T+2验尸完成，更新 {update_count} 条")
             st.session_state.sheet1_refresh = True
         else:
-            st.warning("没有记录被更新，请检查T+2数据是否充足")
+            st.warning("没有记录被更新")
     except Exception as e:
         st.warning(f"验尸异常: {e}")
         
 def get_tickflow_data_for_symbols_offset(tf_client, symbols_list, offset_days=2):
-    """
-    获取相对于最新交易日的偏移日K线。
-    offset_days=1 表示T+1，2表示T+2。
-    """
     if not tf_client: return pd.DataFrame()
-    # 复用原有函数，但查询多天前数据。这里简单用 count 参数拿到多根K线再取倒数第二根？
-    # 更稳健的方式：获取最近 offset_days+1 根日K，取倒数第 offset_days 根。
-    # 直接在原有 get_tickflow_data_for_symbols 基础上修改，或者写一个新函数。
-    # 为简洁，这里用原有函数获取最近3根K线，然后取特定偏移。
     parsed = []
     for s in symbols_list:
         s = str(s).strip()
@@ -1067,17 +981,13 @@ def get_tickflow_data_for_symbols_offset(tf_client, symbols_list, offset_days=2)
         try:
             k = tf_client.klines.get(tf_code, period='1d', count=offset_days+2, as_dataframe=True)
             if k is None or len(k) < offset_days+1: continue
-            # 取倒数第 offset_days 根（从0开始）
             target = k.iloc[-offset_days-1] if offset_days > 0 else k.iloc[-1]
             close = float(target.get('close', target.get('last_price')))
             open_p = float(target.get('open', target.get('open_price', close)))
             high = float(target.get('high', target.get('high_price', close)))
             low = float(target.get('low', target.get('low_price', close)))
             if close > 1000:
-                close /= 100.0
-                open_p /= 100.0
-                high /= 100.0
-                low /= 100.0
+                close /= 100.0; open_p /= 100.0; high /= 100.0; low /= 100.0
             amount = float(target.get('amount', 0))
             vol = float(target.get('volume', 0))
             rows.append({
@@ -1089,7 +999,6 @@ def get_tickflow_data_for_symbols_offset(tf_client, symbols_list, offset_days=2)
         except: continue
     return pd.DataFrame(rows)
 
-# 修改AI验尸函数，加入T+2信息
 def ai_autopsy_record_v2(analysis_text, t1_dict, t2_dict, stock_name, stock_code, mode):
     if not llm_client or not analysis_text: return None
     system_prompt = """你是A股超短线复盘教练。现在进行T+2日验尸，请阅读AI的T日分析、T+1日实际行情和T+2日模拟卖出情况，判断：
@@ -1143,147 +1052,95 @@ def generate_prompt_evolution(failed_cases_text, current_prompt_desc):
 def tail_sniper_scan():
     if not tf: return pd.DataFrame()
     st.info("🎯 尾盘扫描...")
-
-    # 1. 获取实时行情，快速过滤
     try:
         realtime = tf.quotes.get(universes=["CN_Equity_A"], as_dataframe=True)
-        if realtime is None or realtime.empty:
-            st.warning("未获取到实时行情")
-            return pd.DataFrame()
-
-        # 创建涨幅列（兼容字段名）
+        if realtime is None or realtime.empty: return pd.DataFrame()
         if 'ext.change_pct' in realtime.columns:
             realtime['pct_chg'] = realtime['ext.change_pct'].copy()
             if realtime['pct_chg'].abs().max() < 1:
                 realtime['pct_chg'] = realtime['pct_chg'] * 100
         else:
-            st.error("缺少涨幅字段")
-            return pd.DataFrame()
-
-        # 创建 board 列
+            st.error("缺少涨幅字段"); return pd.DataFrame()
         if 'board' not in realtime.columns:
             realtime['board'] = realtime['symbol'].apply(
-                lambda x: 'Main' if x.split('.')[0].startswith(('60','00')) 
-                else ('GEM' if x.split('.')[0].startswith(('30','68')) else 'Other')
-            )
-
-        # 排除 ST
+                lambda x: 'Main' if x.split('.')[0].startswith(('60','00')) else ('GEM' if x.split('.')[0].startswith(('30','68')) else 'Other'))
         realtime = realtime[~realtime['symbol'].str.contains('ST|退', na=False)]
-
-        # 涨幅条件
         main_cond = (realtime['board']=='Main') & (realtime['pct_chg']>=2) & (realtime['pct_chg']<=7.5)
         gem_cond  = (realtime['board']=='GEM') & (realtime['pct_chg']>=2) & (realtime['pct_chg']<=15)
         realtime = realtime[main_cond | gem_cond]
         realtime = realtime[realtime['amount'] > 1e8]
-
-        # 只保留成交额最大的前 50 只
         realtime = realtime.sort_values('amount', ascending=False).head(80)
     except Exception as e:
         st.error(f"实时行情过滤失败: {e}")
         return pd.DataFrame()
-
     if realtime.empty:
         st.info("无满足涨幅和成交额条件的股票")
         return pd.DataFrame()
-
-    # 2. 逐一检查
     candidates = []
     total = len(realtime)
     progress_bar = st.progress(0)
-
     for idx, (_, row) in enumerate(realtime.iterrows()):
         symbol = row['symbol']
-
-        # 15分钟量比
         try:
             df_15m = tf.klines.get(symbol, period='15m', count=16, as_dataframe=True)
-            if df_15m is None or len(df_15m) < 2:
-                continue
-            vol_last = df_15m.iloc[-1]['volume']
-            vol_prev = df_15m.iloc[-2]['volume']
+            if df_15m is None or len(df_15m) < 2: continue
+            vol_last = df_15m.iloc[-1]['volume']; vol_prev = df_15m.iloc[-2]['volume']
             tail_vol_ratio = vol_last / vol_prev if vol_prev > 0 else 0
-            if tail_vol_ratio < 1.5:
-                continue
-        except:
-            continue
-
-
-        # 分时均价线（实盘严格版）
+            if tail_vol_ratio < 1.5: continue
+        except: continue
         try:
             df_1m = tf.klines.get(symbol, period='1m', count=240, as_dataframe=True)
-            if df_1m is None or len(df_1m) < 10:
-                continue
+            if df_1m is None or len(df_1m) < 10: continue
             avg_price = df_1m['amount'].sum() / df_1m['volume'].sum() if df_1m['volume'].sum() > 0 else 0
-            if avg_price <= 0 or row['last_price'] < avg_price:
-                continue
-        except:
-            continue
-
-        # 五档盘口
+            if avg_price <= 0 or row['last_price'] < avg_price: continue
+        except: continue
         try:
             depth = tf.depth.get(symbol)
-            if not depth or not isinstance(depth, dict):
-                continue
-            bid_vol = sum(depth.get('bid_volumes', []))
-            ask_vol = sum(depth.get('ask_volumes', []))
-            if bid_vol <= ask_vol * 1.2:
-                continue
-        except:
-            continue
-
+            if not depth or not isinstance(depth, dict): continue
+            bid_vol = sum(depth.get('bid_volumes', [])); ask_vol = sum(depth.get('ask_volumes', []))
+            if bid_vol <= ask_vol * 1.2: continue
+        except: continue
         candidates.append({
             'symbol': symbol,
             'name': row.get('ext.name', row.get('name', '')),
-            'price': row['last_price'],
-            'pct_chg': row['pct_chg'],
-            'vol_ratio': tail_vol_ratio,
-            'bid_vol': bid_vol,
-            'ask_vol': ask_vol
+            'price': row['last_price'], 'pct_chg': row['pct_chg'],
+            'vol_ratio': tail_vol_ratio, 'bid_vol': bid_vol, 'ask_vol': ask_vol
         })
         time.sleep(0.05)
-
-        progress_bar.progress((idx + 1) / total)
-
+        progress_bar.progress((idx+1)/total)
     progress_bar.empty()
-
     return pd.DataFrame(candidates)
 
 def analyze_tail_snipe(stock_dict):
-    if not llm_client:
-        return "无 AI 客户端"
+    if not llm_client: return "无 AI 客户端"
     prompt = f"""尾盘狙击目标：
 {stock_dict['name']} ({stock_dict['symbol']})
 现价：{stock_dict['price']} 元，涨幅：{stock_dict['pct_chg']}%
 尾盘放量比：{stock_dict['vol_ratio']:.2f}
 买盘总量：{stock_dict['bid_vol']}手，卖盘总量：{stock_dict['ask_vol']}手
 请立即给出操作建议（买入/观望/卖出），目标价和止损价（精确到分），50字内。"""
-    for attempt in range(2):   # 尝试两次
+    for attempt in range(2):
         try:
             resp = llm_client.chat.completions.create(
                 model=CONFIG["LLM_MODEL"],
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=200,
-                timeout=15   # 设置超时避免长时间等待
+                max_tokens=200, timeout=15
             )
             content = resp.choices[0].message.content
-            if content and content.strip():
-                return content.strip()
+            if content and content.strip(): return content.strip()
         except:
-            time.sleep(1)   # 等1秒再重试
+            time.sleep(1)
     return "AI 暂时无建议，请人工判断"
 
 def save_tail_snipe_results(results_list, safe_date):
-    """将尾盘狙击结果写入独立的 Tail_Snipe 工作表"""
-    if not gc or not spreadsheet_url or not results_list:
-        return
+    if not gc or not spreadsheet_url or not results_list: return
     try:
-        sh = gc.open_by_url(spreadsheet_url)
+        sh = st.session_state.get("gspread_client") or gc.open_by_url(spreadsheet_url)
         try:
             ws = sh.worksheet("Tail_Snipe")
-        except gspread.exceptions.WorksheetNotFound:
+        except:
             ws = sh.add_worksheet(title="Tail_Snipe", rows=100, cols=8)
             ws.append_row(["日期", "名称", "代码", "现价", "AI建议买点", "AI建议止损", "AI分析全文", "竞价条件"])
-        
         ws.append_rows(results_list, value_input_option='USER_ENTERED')
         st.success(f"✅ 已将 {len(results_list)} 条尾盘狙击结果存入 Tail_Snipe！")
     except Exception as e:
@@ -1293,121 +1150,91 @@ def save_tail_snipe_results(results_list, safe_date):
 st.title("👑 四轨制猎手 V27.5 (精简版)")
 safe_dates = get_safe_trade_dates()
 st.caption(f"📅 基准日: {safe_dates['today']} | 昨: {safe_dates['yesterday']}")
-run_autopsy(safe_dates)
-# 全局 Sheet1 缓存，避免重复读取
-# 全局 Sheet1 缓存，避免重复读取
+
+# 全局缓存初始化（只执行一次）
 if gc and spreadsheet_url:
-    try:
-        if "sheet1_data" not in st.session_state or st.session_state.get("sheet1_refresh"):
-            sh = gc.open_by_url(spreadsheet_url)
-            ws = sh.worksheet(SHEET_NAME)
-            st.session_state.sheet1_data = ws.get_all_records()
-            st.session_state.sheet1_refresh = False
-    except Exception as e:
-        if "sheet1_data" not in st.session_state:
-            st.session_state.sheet1_data = []
-        st.warning(f"Sheet1 缓存加载失败: {e}")
-
-    try:
-        if "hot_topics_data" not in st.session_state or st.session_state.get("hot_topics_refresh"):
-            sh = gc.open_by_url(spreadsheet_url)
-            try:
-                ws_hot = sh.worksheet("Hot_Topics")
-                st.session_state.hot_topics_data = ws_hot.get_all_records()
-            except gspread.exceptions.WorksheetNotFound:
-                st.session_state.hot_topics_data = []
-            st.session_state.hot_topics_refresh = False
-    except Exception as e:
-        if "hot_topics_data" not in st.session_state:
-            st.session_state.hot_topics_data = []
-
-    try:
-        if "portfolio_data" not in st.session_state or st.session_state.get("portfolio_refresh"):
-            sh = gc.open_by_url(spreadsheet_url)
-            try:
-                ws_port = sh.worksheet("Portfolio")
-                st.session_state.portfolio_data = ws_port.get_all_records()
-            except gspread.exceptions.WorksheetNotFound:
-                st.session_state.portfolio_data = []
-            st.session_state.portfolio_refresh = False
-    except Exception as e:
-        if "portfolio_data" not in st.session_state:
-            st.session_state.portfolio_data = []
-            
-# ================= 持仓管理函数（必须放在主界面之前） =================
-def load_portfolio():
-    """从 Portfolio 工作表读取持有中的股票（增强兼容性）"""
-    if not gc or not spreadsheet_url: return pd.DataFrame()
-    try:
+    if "gspread_client" not in st.session_state:
         sh = gc.open_by_url(spreadsheet_url)
+        st.session_state.gspread_client = sh
         try:
-            ws = sh.worksheet("Portfolio")
-        except gspread.exceptions.WorksheetNotFound:
-            ws = sh.add_worksheet(title="Portfolio", rows=100, cols=10)
-            ws.append_row(["日期", "代码", "名称", "策略赛道", "买入价", "持仓数量", "当前状态", "卖出价", "卖出日期", "AI审查结果"])
-            return pd.DataFrame()
+            st.session_state.sheet1_ws = sh.worksheet("Sheet1")
+        except:
+            st.session_state.sheet1_ws = None
+        try:
+            st.session_state.portfolio_ws = sh.worksheet("Portfolio")
+        except:
+            st.session_state.portfolio_ws = None
+        try:
+            st.session_state.hot_topics_ws = sh.worksheet("Hot_Topics")
+        except:
+            st.session_state.hot_topics_ws = None
+        try:
+            st.session_state.prompt_hist_ws = sh.worksheet("Prompt_History")
+        except:
+            st.session_state.prompt_hist_ws = None
+        try:
+            st.session_state.tail_snipe_ws = sh.worksheet("Tail_Snipe")
+        except:
+            st.session_state.tail_snipe_ws = None
 
-        data = ws.get_all_records()
-        if not data:
-            return pd.DataFrame()
+    # 数据缓存（按需刷新）
+    if "sheet1_data" not in st.session_state or st.session_state.get("sheet1_refresh"):
+        if st.session_state.sheet1_ws:
+            st.session_state.sheet1_data = st.session_state.sheet1_ws.get_all_records()
+            st.session_state.sheet1_refresh = False
+    if "portfolio_data" not in st.session_state or st.session_state.get("portfolio_refresh"):
+        if st.session_state.portfolio_ws:
+            st.session_state.portfolio_data = st.session_state.portfolio_ws.get_all_records()
+            st.session_state.portfolio_refresh = False
+    if "hot_topics_data" not in st.session_state or st.session_state.get("hot_topics_refresh"):
+        if st.session_state.hot_topics_ws:
+            st.session_state.hot_topics_data = st.session_state.hot_topics_ws.get_all_records()
+            st.session_state.hot_topics_refresh = False
+    if "prompt_hist_data" not in st.session_state or st.session_state.get("prompt_hist_refresh"):
+        if st.session_state.prompt_hist_ws:
+            st.session_state.prompt_hist_data = st.session_state.prompt_hist_ws.get_all_records()
+            st.session_state.prompt_hist_refresh = False
 
-        df = pd.DataFrame(data)
+run_autopsy(safe_dates)
 
-        # 自动识别状态列
-        status_col = None
-        if '当前状态' in df.columns:
-            status_col = '当前状态'
-        else:
-            for col in df.columns:
-                if '状态' in str(col):
-                    status_col = col
-                    break
-
-        if status_col is None:
-            # 没有状态列，返回全部数据（或空）
-            st.warning("Portfolio 表缺少「当前状态」列，无法正确筛选持仓")
-            return pd.DataFrame()
-
-        # 筛选持有中的记录（忽略前后空格）
-        mask = df[status_col].astype(str).str.strip() == '持有中'
-        return df[mask].copy()
-    except Exception as e:
-        logging.error(f"加载持仓失败: {e}")
-        st.warning(f"加载持仓异常: {e}")
-        return pd.DataFrame()
+# ================= 持仓管理函数 =================
+def load_portfolio():
+    if not gc or not spreadsheet_url: return pd.DataFrame()
+    data = st.session_state.get("portfolio_data", [])
+    if not data: return pd.DataFrame()
+    df = pd.DataFrame(data)
+    status_col = None
+    if '当前状态' in df.columns:
+        status_col = '当前状态'
+    else:
+        for col in df.columns:
+            if '状态' in str(col):
+                status_col = col
+                break
+    if status_col is None: return pd.DataFrame()
+    mask = df[status_col].astype(str).str.strip() == '持有中'
+    return df[mask].copy()
 
 def save_new_buy(stock, track, buy_price, quantity, date):
-    """新增一条持有记录，quantity 为买入股数（整数）"""
     if not gc: return
+    ws = st.session_state.get("portfolio_ws")
+    if ws is None: return
     try:
-        sh = gc.open_by_url(spreadsheet_url)
-        ws = sh.worksheet("Portfolio")
-        # 兼容中英文列名
         code = stock.get('code') or stock.get('代码', '')
         name = stock.get('name') or stock.get('名称', '')
-        ws.append_row([
-            date,
-            code,
-            name,
-            track,
-            buy_price,
-            int(quantity),        # 确保整数
-            "持有中",
-            None, None, None
-        ], value_input_option='USER_ENTERED')
+        ws.append_row([date, code, name, track, buy_price, int(quantity), "持有中", None, None, None], value_input_option='USER_ENTERED')
+        st.session_state.portfolio_refresh = True
     except Exception as e:
         st.error(f"保存买入失败: {e}")
 
 def record_sell_and_review(stock_record, sell_price, date):
-    """标记卖出，调用AI审查交易是否符合策略（带重试）"""
     if not gc: return
     raw_code = stock_record.get('代码') or stock_record.get('code', '')
     code = str(raw_code).replace("'", "").strip().zfill(6)
-    success = False
+    ws = st.session_state.get("portfolio_ws")
+    if ws is None: return
     for attempt in range(3):
         try:
-            sh = gc.open_by_url(spreadsheet_url)
-            ws = sh.worksheet("Portfolio")
             cell = ws.find(code)
             if cell:
                 row = cell.row
@@ -1417,24 +1244,19 @@ def record_sell_and_review(stock_record, sell_price, date):
                 review = ai_trade_review(stock_record, sell_price)
                 ws.update_cell(row, 10, review)
                 st.info(f"卖出已记录，AI审查：{review}")
-                success = True
+                st.session_state.portfolio_refresh = True
                 break
             else:
-                st.warning(f"未在 Portfolio 中找到 {code}，请检查代码格式")
+                st.warning(f"未在 Portfolio 中找到 {code}")
                 break
         except Exception as e:
             if '429' in str(e):
-                st.warning(f"写入配额限制，等待 10 秒后重试...")
                 time.sleep(10)
             else:
                 st.error(f"记录卖出失败: {e}")
                 break
-    if success:
-        # 卖出成功后刷新 Portfolio 缓存
-        st.session_state.portfolio_refresh = True
 
 def ai_trade_review(stock_record, sell_price):
-    """让AI判断卖出是否符合超短线纪律"""
     if not llm_client: return "无AI"
     prompt = f"""你是超短线交易教练。请审查以下操作是否符合纪律：
 股票：{stock_record['名称']}({stock_record['代码']})
@@ -1452,7 +1274,6 @@ def ai_trade_review(stock_record, sell_price):
     except: return "审查失败"
 
 def analyze_holding(stock_record, tf_client):
-    """对单只持仓股进行深度跟踪：复盘 + 后续操作建议 + 动态价格指导"""
     if not llm_client: return "AI未就绪"
     code = str(stock_record.get('代码') or stock_record.get('code', '')).replace("'", "").strip().zfill(6)
     name = stock_record.get('名称') or stock_record.get('name', '')
@@ -1461,16 +1282,12 @@ def analyze_holding(stock_record, tf_client):
     except:
         return "买入价数据错误"
     track = stock_record.get('策略赛道', '')
-
-    # 纪律参数
     if '妖股' in track:
         stop_loss_pct, profit_target, time_stop = -5.0, 10.0, 15
     elif '逆风' in track:
         stop_loss_pct, profit_target, time_stop = -2.0, 5.0, 30
     else:
         stop_loss_pct, profit_target, time_stop = -3.0, 8.0, 30
-
-    # 获取行情
     try:
         exchange = 'SH' if code.startswith('6') else 'SZ'
         tf_code = f"{code}.{exchange}"
@@ -1479,13 +1296,10 @@ def analyze_holding(stock_record, tf_client):
             return f"行情数据不足 (仅{len(df_k) if df_k is not None else 0}根K线)"
         latest = df_k.iloc[-1]
         current_price = float(latest.get('close', latest.get('last_price')))
-        if current_price <= 0:
-            return "当前价异常"
+        if current_price <= 0: return "当前价异常"
         pct_chg = (current_price - buy_price) / buy_price * 100
-
         prev_close = float(df_k.iloc[-2].get('close', df_k.iloc[-2].get('last_price', current_price)))
         today_pct = (current_price - prev_close) / prev_close * 100 if prev_close > 0 else 0
-
         vol = float(latest.get('volume', 0))
         avg_vol_5 = df_k['volume'].tail(5).mean()
         vol_ratio = vol / avg_vol_5 if avg_vol_5 > 0 else 1.0
@@ -1494,7 +1308,6 @@ def analyze_holding(stock_record, tf_client):
         ma_status = "多头" if ma5 > ma20 else "空头"
     except Exception as e:
         return f"行情获取失败: {e}"
-
     prompt = f"""你是超短线交易教练，请复盘以下持仓并提供操作指导。
 
 【持仓信息】
@@ -1508,53 +1321,36 @@ def analyze_holding(stock_record, tf_client):
 复盘：[当初买入逻辑是否仍在？当前走势是否符合预期？可加入均线/量能判断]
 操作：[持有/减仓/卖出/加仓]，并附 10 字内理由
 价位：[若持有，给出新的目标价和止损价；若卖出，给出清仓价]"""
-
-    for attempt in range(3):   # 最多尝试三次
+    for attempt in range(3):
         try:
             resp = llm_client.chat.completions.create(
                 model=CONFIG["LLM_MODEL"],
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=1000,
-                timeout=30   # 增加超时时间
+                max_tokens=300, timeout=30
             )
             content = resp.choices[0].message.content
-            if content and content.strip():
-                return content.strip()
-            # 如果返回空内容，记录并重试
-            logging.warning(f"持仓跟踪 {name}({code}) 第{attempt+1}次返回空内容，准备重试...")
-            time.sleep(2)   # 等2秒再试
+            if content and content.strip(): return content.strip()
+            time.sleep(2)
         except Exception as e:
-            logging.error(f"持仓跟踪 {name}({code}) 第{attempt+1}次调用失败: {e}")
-            if attempt < 2:
-                time.sleep(3)
-            else:
-                return f"AI调用失败: {e}"
+            if attempt < 2: time.sleep(3)
+            else: return f"AI调用失败: {e}"
+    return "AI连续3次返回空内容，请检查模型状态或稍后重试。"
 
-    # 三次都返回空
-    return f"AI连续3次返回空内容，请检查模型状态或稍后重试。"
-        
 def auto_rollback_if_needed():
     if not gc: return
-    try:
-        sh = gc.open_by_url(spreadsheet_url)
-        prompt_ws = sh.worksheet(PROMPT_HIST_SHEET)
-        data = prompt_ws.get_all_values()
-        if len(data) < 2: return
-        last_row = data[-1]
-        # 最近一笔的胜率和交易笔数
-        win_rate = float(last_row[4]) if len(last_row) > 4 and last_row[4] else 100
-        trades = int(last_row[5]) if len(last_row) > 5 and last_row[5] else 0
-        if trades >= 10 and win_rate < 30:
-            # 存在上一版本则回滚
-            if len(data) >= 3:
-                prev_row = data[-2]
-                prev_prompt = prev_row[2] if len(prev_row) > 2 else None
-                if prev_prompt:
-                    st.session_state.active_prompts["normal"] = prev_prompt + " (已自动回滚)"
-                    st.session_state.current_active_prompt = f"已回滚至 {prev_row[1]}"
-                    st.warning(f"⚠️ 当前策略胜率过低 ({win_rate}%)，已自动回滚至上一版本。")
-    except Exception as e:
-        logging.warning(f"自动回滚检查失败: {e}")
+    data = st.session_state.get("prompt_hist_data", [])
+    if len(data) < 2: return
+    last_row = data[-1]
+    win_rate = float(last_row[4]) if len(last_row) > 4 and last_row[4] else 100
+    trades = int(last_row[5]) if len(last_row) > 5 and last_row[5] else 0
+    if trades >= 10 and win_rate < 30:
+        if len(data) >= 3:
+            prev_row = data[-2]
+            prev_prompt = prev_row[2] if len(prev_row) > 2 else None
+            if prev_prompt:
+                st.session_state.active_prompts["normal"] = prev_prompt + " (已自动回滚)"
+                st.session_state.current_active_prompt = f"已回滚至 {prev_row[1]}"
+                st.warning(f"⚠️ 当前策略胜率过低 ({win_rate}%)，已自动回滚至上一版本。")
 
 auto_rollback_if_needed()
 
@@ -1566,21 +1362,16 @@ with st.sidebar:
     st.divider()
     st.header("👁️ 自选股监控")
     watchlist_input = st.text_area("代码", value="600519,000858,300750", height=150)
-    # ========== 今日热点主题（可确认） ==========
     st.divider()
     st.header("🔥 今日热点主题")
     hot_topics = load_hot_topics()
-    # 计算确认的关键词字符串
     if hot_topics:
         confirmed_keywords = []
         for t in hot_topics:
             topic_name = t.get('主题', '')
             score = t.get('热度评分', '?')
             keywords_str = t.get('关键词', '')
-            confirmed = st.checkbox(
-                f"{topic_name} (热度{score})",
-                key=f"hot_topic_{topic_name}"
-            )
+            confirmed = st.checkbox(f"{topic_name} (热度{score})", key=f"hot_topic_{topic_name}")
             if confirmed:
                 kws = [k.strip() for k in keywords_str.split(',')]
                 confirmed_keywords.extend(kws)
@@ -1590,29 +1381,19 @@ with st.sidebar:
             hot_keywords_str = ""
     else:
         hot_keywords_str = st.text_input("今日热点关键词（手动输入）", value="")
-
-    # 存入 session（每次脚本重新运行时都会执行到这里，保证是最新的勾选状态）
     st.session_state.hot_keywords = hot_keywords_str
-
-    # 手动刷新热点数据按钮（独立逻辑）
     if st.button("🔄 刷新热点数据"):
         st.session_state.hot_topics_refresh = True
         st.rerun()
     st.divider()
     st.header("🧬 AI策略进化")
-    # 显示当前版本胜率
-    try:
-        sh = gc.open_by_url(spreadsheet_url)
-        prompt_ws = sh.worksheet(PROMPT_HIST_SHEET)
-        data = prompt_ws.get_all_values()
-        if len(data) > 1:
-            last_row = data[-1]
-            version = last_row[1] if len(last_row) > 1 else "?"
-            winrate = last_row[4] if len(last_row) > 4 else "?"
-            trades = last_row[5] if len(last_row) > 5 else "?"
-            st.caption(f"版本 {version} | 近{trades}笔胜率 {winrate}%")
-    except:
-        pass
+    data = st.session_state.get("prompt_hist_data", [])
+    if len(data) > 1:
+        last_row = data[-1]
+        version = last_row[1] if len(last_row) > 1 else "?"
+        winrate = last_row[4] if len(last_row) > 4 else "?"
+        trades = last_row[5] if len(last_row) > 5 else "?"
+        st.caption(f"版本 {version} | 近{trades}笔胜率 {winrate}%")
     st.caption(f"当前状态: {st.session_state.current_active_prompt}")
     run_evolution = st.button("🔍 分析错题本", use_container_width=True)
     st.divider()
@@ -1628,22 +1409,18 @@ with st.sidebar:
         run_tail = False
         st.caption("尾盘狙击仅在 14:30-15:00 可用")
     st.divider()
-
-    # 全市场扫描按钮 → 启动流程
     if st.button("🚀 全市场四轨扫描", type="primary", use_container_width=True):
-        st.session_state.scan_phase = "sell"      # 标记进入卖出确认阶段
+        st.session_state.scan_phase = "sell"
         st.session_state.scan_top_n_normal = top_n_normal
         st.session_state.scan_top_n_demon = top_n_demon
         st.rerun()
-
-    # 自选股诊断按钮保持独立，不触发流程
     run_watchlist = st.button("👁️ 自选股深度诊断", type="secondary", use_container_width=True)
     st.caption("💡 盘后务必查看「明日竞价确认表」，明早若条件不达标，请放弃买入！")
-    # 存储热点关键词供后续使用
     if hot_keywords_str:
         st.session_state.hot_keywords = hot_keywords_str
     else:
         st.session_state.hot_keywords = ""
+
 # ================= 自选股深度诊断（独立，不触发持仓流程） =================
 if run_watchlist:
     if not tf or not llm_client: st.error("客户端未初始化"); st.stop()
@@ -1653,35 +1430,22 @@ if run_watchlist:
     market_context, market_ratio = get_market_context(tf, df)
     st.subheader("🌍 大盘环境")
     st.text(market_context)
-
     symbols = [s.strip() for s in re.split(r'[,\n\s]+', watchlist_input) if s.strip()]
-    if not symbols:
-        st.warning("请至少输入一个股票代码")
-        st.stop()
-
+    if not symbols: st.warning("请至少输入一个股票代码"); st.stop()
     st.info(f"正在获取 {len(symbols)} 只自选股的基本数据...")
     w_df = get_tickflow_data_for_symbols(tf, symbols)
-    if w_df.empty:
-        st.warning("⚠️ 未获取到有效自选股数据，请检查代码是否正确")
-        st.stop()
-
+    if w_df.empty: st.warning("⚠️ 未获取到有效自选股数据，请检查代码是否正确"); st.stop()
     st.info("正在进行财务排雷...")
     w_df = financial_blacklist_filter(w_df)
-    if w_df.empty:
-        st.warning("⚠️ 所有自选股均未通过财务排雷（每股净资产<1）")
-        st.stop()
-
+    if w_df.empty: st.warning("⚠️ 所有自选股均未通过财务排雷（每股净资产<1）"); st.stop()
     st.info("正在计算量比与筹码警告...")
     w_df = calculate_real_vol_ratio(w_df)
-
     watchlist_results = []
     total = len(w_df)
     progress_bar = st.progress(0)
     status_text = st.empty()
-
     for idx, (_, row) in enumerate(w_df.iterrows()):
-        code = row.get('code', '')
-        name = row.get('name', '')
+        code = row.get('code', ''); name = row.get('name', '')
         status_text.text(f"正在分析 {name}({code}) ... ({idx+1}/{total})")
         try:
             history = get_history_context(tf, row['tf_code'])
@@ -1689,37 +1453,23 @@ if run_watchlist:
             watchlist_results.append({'row': row, 'reasoning': reasoning, 'final': final})
         except Exception as e:
             st.warning(f"分析 {name}({code}) 失败: {e}")
-            # 即使失败也添加一个空结果，以保持计数
             watchlist_results.append({'row': row, 'reasoning': '', 'final': f'分析失败: {e}'})
-        progress_bar.progress((idx + 1) / total)
-        time.sleep(0.5)   # 避免API限流
-
-    progress_bar.empty()
-    status_text.empty()
-
-    if not watchlist_results:
-        st.warning("⚠️ 所有自选股分析均失败，请稍后重试")
-        st.stop()
-
+        progress_bar.progress((idx+1)/total)
+        time.sleep(0.5)
+    progress_bar.empty(); status_text.empty()
+    if not watchlist_results: st.warning("⚠️ 所有自选股分析均失败，请稍后重试"); st.stop()
     st.subheader("🚑 自选股诊断")
     for item in watchlist_results:
         with st.expander(f"{item['row']['name']} ({item['row']['code']})"):
-            if item['final']:
-                st.markdown(item['final'])
-            else:
-                st.info("该股分析无输出，请检查日志")
+            if item['final']: st.markdown(item['final'])
+            else: st.info("该股分析无输出，请检查日志")
 
 # ================= 全市场扫描流程（基于会话阶段） =================
 scan_phase = st.session_state.get("scan_phase", None)
-
 if scan_phase == "sell":
-    # ----- 阶段1：持仓卖出确认 -----
     portfolio_df = load_portfolio()
     if portfolio_df is None or portfolio_df.empty:
-        # 没有持仓，直接跳到买入阶段
-        st.session_state.scan_phase = "buy"
-        st.rerun()
-
+        st.session_state.scan_phase = "buy"; st.rerun()
     st.subheader("📌 持仓卖出确认")
     st.warning(f"您目前持有 {len(portfolio_df)} 只股票，请确认是否卖出：")
     with st.form(key="sell_form"):
@@ -1728,29 +1478,20 @@ if scan_phase == "sell":
             col1, col2 = st.columns([1, 3])
             sell = col1.checkbox(f"卖出 {holding['名称']}({holding['代码']})", key=f"sell_{holding['代码']}")
             price = col2.number_input("卖出价", value=float(holding['买入价']), step=0.01, key=f"sell_price_{holding['代码']}")
-            if sell:
-                sell_records.append((holding, price))
+            if sell: sell_records.append((holding, price))
         if st.form_submit_button("确认卖出", key="submit_sell"):
-            for holding, price in sell_records:
-                record_sell_and_review(holding, price, safe_dates['today'])
-            st.success("卖出记录已更新")
-            st.rerun()
-
-    # 提供“跳过卖出，直接下一步”的按钮，避免死循环
+            for holding, price in sell_records: record_sell_and_review(holding, price, safe_dates['today'])
+            st.success("卖出记录已更新"); st.rerun()
     if st.button("无持仓需卖出，进入买入确认"):
-        st.session_state.scan_phase = "buy"
-        st.rerun()
+        st.session_state.scan_phase = "buy"; st.rerun()
 
 elif scan_phase == "buy":
-    # ----- 阶段2：昨日推荐买入确认 -----
     st.subheader("📥 昨日推荐买入确认")
     try:
         df_hist = pd.DataFrame(st.session_state.get("sheet1_data", []))
         if df_hist.empty:
             st.info("暂无历史推荐记录")
-            if st.button("直接进入扫描"):
-                st.session_state.scan_phase = "scan"
-                st.rerun()
+            if st.button("直接进入扫描"): st.session_state.scan_phase = "scan"; st.rerun()
         else:
             date_col = next((col for col in df_hist.columns if '日' in str(col)), df_hist.columns[0])
             yesterday_str = safe_dates['yesterday']
@@ -1758,50 +1499,32 @@ elif scan_phase == "buy":
             yesterday_recs = df_hist[mask]
             if yesterday_recs.empty:
                 st.info(f"昨日({yesterday_str})无推荐记录")
-                if st.button("直接进入扫描"):
-                    st.session_state.scan_phase = "scan"
-                    st.rerun()
+                if st.button("直接进入扫描"): st.session_state.scan_phase = "scan"; st.rerun()
             else:
                 with st.form(key="buy_form"):
                     buy_records = []
                     for _, rec in yesterday_recs.iterrows():
-                        name = rec.get('名称', '未知')
-                        code = rec.get('代码', '')
+                        name = rec.get('名称', '未知'); code = rec.get('代码', '')
                         ai_buy = 0.0
-                        try:
-                            ai_buy = float(rec.get('AI建议买点', 0))
-                        except:
-                            pass
+                        try: ai_buy = float(rec.get('AI建议买点', 0))
+                        except: pass
                         col1, col2, col3 = st.columns([1, 1.5, 1.5])
                         bought = col1.checkbox(f"已买入 {name}({code})", key=f"bought_{code}")
                         buy_price = col2.number_input("实际买入价", value=ai_buy, step=0.01, key=f"buy_price_{code}")
                         quantity = col3.number_input("买入股数", value=100, step=100, key=f"qty_{code}")
-                        if bought:
-                            buy_records.append((rec, buy_price, quantity))
+                        if bought: buy_records.append((rec, buy_price, quantity))
                     if st.form_submit_button("确认买入", key="submit_buy"):
-                        for rec, price, qty in buy_records:
-                            save_new_buy(rec.to_dict(), rec.get('策略赛道', ''), price, qty, safe_dates['today'])
-                        st.success("买入记录已保存")
-                        st.session_state.scan_phase = "scan"
-                        st.rerun()
-                if st.button("跳过买入，直接开始扫描"):
-                    st.session_state.scan_phase = "scan"
-                    st.rerun()
+                        for rec, price, qty in buy_records: save_new_buy(rec.to_dict(), rec.get('策略赛道', ''), price, qty, safe_dates['today'])
+                        st.success("买入记录已保存"); st.session_state.scan_phase = "scan"; st.rerun()
+                if st.button("跳过买入，直接开始扫描"): st.session_state.scan_phase = "scan"; st.rerun()
     except Exception as e:
         st.caption(f"无法加载昨日推荐: {e}")
 
 elif scan_phase == "scan":
-    # ----- 阶段3：全市场扫描 -----
-    if not tf or not llm_client:
-        st.error("客户端未初始化")
-        st.stop()
-
-    # 应用侧边栏滑块的数值
+    if not tf or not llm_client: st.error("客户端未初始化"); st.stop()
     CONFIG["TOP_N_NORMAL"] = st.session_state.get("scan_top_n_normal", CONFIG["TOP_N_NORMAL"])
     CONFIG["TOP_N_DEMON"] = st.session_state.get("scan_top_n_demon", CONFIG["TOP_N_DEMON"])
-    
     normal_results, demon_results, defense_results = [], [], []
-    
     with st.spinner("获取日线数据..."):
         df, market_avg_pct = get_data_tickflow()
         if df is None: st.error("数据获取失败"); st.stop()
@@ -1809,7 +1532,6 @@ elif scan_phase == "scan":
     st.subheader("🌍 大盘环境")
     st.text(market_context)
 
-    # 轨道一
     normal_df = filter_normal_stocks(df)
     normal_df = financial_blacklist_filter(normal_df)
     normal_df = filter_recent_surge(normal_df, days=5, max_pct=25)
@@ -1818,7 +1540,6 @@ elif scan_phase == "scan":
         normal_df = normal_df[normal_df['vol_ratio'] <= 1.2]
         normal_df = add_hotspot_flag(normal_df, st.session_state.get("hot_keywords", "")).head(CONFIG['TOP_N_NORMAL'])
 
-    # 轨道二：妖股
     demon_df = filter_demon_stocks(df)
     demon_df = financial_blacklist_filter(demon_df)
     demon_df = filter_recent_surge(demon_df, days=3, max_pct=40)
@@ -1826,7 +1547,6 @@ elif scan_phase == "scan":
         demon_df = calculate_real_vol_ratio(demon_df)
         demon_df = add_hotspot_flag(demon_df, st.session_state.get("hot_keywords", "")).head(CONFIG['TOP_N_DEMON'])
 
-    # 轨道三：逆风突破
     defense_df = pd.DataFrame()
     if market_ratio < 1.0 or market_avg_pct < 0.0:
         defense_df = filter_defense_stocks(df, tf, market_avg_pct)
@@ -1865,35 +1585,25 @@ elif scan_phase == "scan":
             defense_results.append({'row':row,'reasoning':reasoning,'final':final}); time.sleep(1)
         progress_bar.empty()
 
-        # 竞价确认表
         if normal_results or demon_results or defense_results:
             st.subheader("📋 明日竞价入场确认表")
-            # 为每个结果关联轨道名称
             all_stocks = []
-            for item in normal_results:
-                all_stocks.append({'row': item['row'], 'final': item['final'], 'track_name': '缩量潜伏'})
-            for item in demon_results:
-                all_stocks.append({'row': item['row'], 'final': item['final'], 'track_name': '主板妖股'})
-            for item in defense_results:
-                all_stocks.append({'row': item['row'], 'final': item['final'], 'track_name': '逆风突破'})
-            
+            for item in normal_results: all_stocks.append({'row': item['row'], 'final': item['final'], 'track_name': '缩量潜伏'})
+            for item in demon_results: all_stocks.append({'row': item['row'], 'final': item['final'], 'track_name': '主板妖股'})
+            for item in defense_results: all_stocks.append({'row': item['row'], 'final': item['final'], 'track_name': '逆风突破'})
             for item in all_stocks:
                 row, final, track_name = item['row'], item['final'], item['track_name']
-                # 根据轨道名称确定 track 类型
-                if '妖股' in track_name:
-                    track = "妖股"
-                elif '逆风' in track_name:
-                    track = "逆风"
-                else:
-                    track = "缩量"
+                if '妖股' in track_name: track = "妖股"
+                elif '逆风' in track_name: track = "逆风"
+                else: track = "缩量"
                 cond = generate_auction_checklist(row, final, track)
                 with st.expander(f"🔍 {cond['name']} ({cond['code']}) 竞价条件"):
                     for c in cond['conditions']: st.write(f"- {c}")
                     st.caption("⚠️ 若任一条件不满足，放弃买入")
         save_today_predictions(normal_results, demon_results, defense_results, safe_dates)
-        # 保存本次扫描目标用于监控（容错处理）
+
+        # 监控目标保存
         st.session_state.last_scan_targets = []
-        # 防御：强制转换为列表
         _normal = normal_results if isinstance(normal_results, list) else []
         _demon = demon_results if isinstance(demon_results, list) else []
         _defense = defense_results if isinstance(defense_results, list) else []
@@ -1903,59 +1613,46 @@ elif scan_phase == "scan":
                 final = item['final']
                 buy_price = extract_price_from_text(final, row['close'], "buy")
                 stop_price = extract_price_from_text(final, row['close'], "stop")
-                if item in _normal:
-                    track = "缩量"
-                elif item in _demon:
-                    track = "妖股"
-                else:
-                    track = "逆风"
+                if item in _normal: track = "缩量"
+                elif item in _demon: track = "妖股"
+                else: track = "逆风"
                 st.session_state.last_scan_targets.append({
-                    'code': row['code'],
-                    'name': row['name'],
-                    'buy_price': buy_price,
-                    'stop_price': stop_price,
-                    'track': track
+                    'code': row['code'], 'name': row['name'],
+                    'buy_price': buy_price, 'stop_price': stop_price, 'track': track
                 })
-            except Exception:
-                continue
-        # 同时加载持仓数据用于监控
+            except Exception: continue
+
         portfolio_df = load_portfolio()
         if not portfolio_df.empty:
             st.session_state.last_portfolio = []
             for _, holding in portfolio_df.iterrows():
-                profit_target = float(holding['买入价']) * 1.05  # 默认5%止盈，可根据策略调整
                 st.session_state.last_portfolio.append({
                     'code': str(holding.get('代码', '')).zfill(6),
                     'name': holding.get('名称', ''),
                     'buy_price': float(holding['买入价']),
-                    'stop_loss': float(holding['买入价']) * 0.97,  # 默认-3%止损
-                    'profit_target': profit_target
+                    'stop_loss': float(holding['买入价']) * 0.97,
+                    'profit_target': float(holding['买入价']) * 1.05
                 })
         else:
             st.session_state.last_portfolio = []
 
-    # 展示轨道结果
     st.subheader("🛡️ 轨道一：缩量潜伏池")
     for i, item in enumerate(normal_results,1):
-        with st.expander(f"[{i}] {item['row']['name']} 涨幅{item['row']['pct_chg']:.1f}%"):
-            st.markdown(item['final'])
+        with st.expander(f"[{i}] {item['row']['name']} 涨幅{item['row']['pct_chg']:.1f}%"): st.markdown(item['final'])
     st.subheader("🐉 轨道二：妖股池")
     for idx, item in enumerate(demon_results, 1):
         row = item['row']
         with st.expander(f"[{idx}] {row['name']} 涨幅{row['pct_chg']:.1f}%"):
-            if row.get('chip_warning'):
-                st.caption(f"⚠️ 风险提示：{row['chip_warning']}")
+            if row.get('chip_warning'): st.caption(f"⚠️ 风险提示：{row['chip_warning']}")
             st.markdown(item['final'])
     st.subheader("🔥 轨道三：逆风突破池")
     for i, item in enumerate(defense_results,1):
-        with st.expander(f"[{i}] {item['row']['name']} 涨幅{item['row']['pct_chg']:.1f}%"):
-            st.markdown(item['final'])
+        with st.expander(f"[{i}] {item['row']['name']} 涨幅{item['row']['pct_chg']:.1f}%"): st.markdown(item['final'])
 
-    # 扫描完成，清除阶段状态，回到初始界面
     if st.button("返回主界面"):
-        st.session_state.scan_phase = None
-        st.rerun()
+        st.session_state.scan_phase = None; st.rerun()
 
+# ================= 持仓实时跟踪 =================
 if run_tracking:
     portfolio_df = load_portfolio()
     if portfolio_df is None or portfolio_df.empty:
@@ -1963,19 +1660,17 @@ if run_tracking:
     else:
         st.subheader("📊 持仓实时跟踪分析")
         for _, holding in portfolio_df.iterrows():
-            # 强制标准化代码（无论原始格式如何，都补全为6位文本）
             raw_code = holding.get('代码') or holding.get('code')
-            code = str(raw_code).replace("'", "").replace(" ", "").strip().zfill(6)
+            code = str(raw_code).replace("'", "").strip().zfill(6)
             name = holding.get('名称') or holding.get('name', '未知')
             buy_price = holding.get('买入价', '?')
             with st.expander(f"{name}({code}) | 成本{buy_price}"):
-                # 传入标准化后的代码副本，避免影响原始数据
                 holding_copy = holding.to_dict()
                 holding_copy['代码'] = code
                 result = analyze_holding(holding_copy, tf)
                 st.write(result)
-                
-# ========== 尾盘狙击（独立功能） ==========
+
+# ================= 尾盘狙击（独立功能） =================
 if run_tail:
     tail_df = tail_sniper_scan()
     if not tail_df.empty:
@@ -1994,21 +1689,19 @@ if run_tail:
                 buy_price,
                 stop_price,
                 advice,
-                ""   # 竞价条件留空
+                ""
             ])
         save_tail_snipe_results(tail_save_data, safe_dates['today'])
     else:
         st.info("无尾盘目标")
 
+# ================= 实时监控（主界面） =================
 st.divider()
 st.header("📡 盘中实时监控")
 if "monitor_thread" not in st.session_state:
     st.session_state.monitor_thread = None
-
 enable_monitor = st.checkbox("启动 WebSocket 实时提醒（钉钉+AI）")
-
 if enable_monitor:
-        # 加载持仓数据
     portfolio_df = load_portfolio()
     portfolios = []
     if portfolio_df is not None and not portfolio_df.empty:
@@ -2024,9 +1717,7 @@ if enable_monitor:
                 'profit_target': buy_price * 1.05,
                 'track': holding.get('策略赛道', '')
             })
-
     targets = st.session_state.get("last_scan_targets", [])
-
     if st.session_state.monitor_thread is None:
         if targets or portfolios:
             monitor = RealtimeMonitor(
@@ -2041,32 +1732,23 @@ if enable_monitor:
             st.success(f"✅ 监控已启动！持仓 {len(portfolios)} 只，推荐 {len(targets)} 只")
         else:
             st.warning("没有可监控的目标，请先运行全市场扫描或确保 Portfolio 表中有持仓")
-
-        # 刷新状态按钮
-    if st.button("🔄 刷新监控状态", key="refresh_monitor"):
-        st.rerun()
-
-        # 显示连接状态和行情
+    if st.button("🔄 刷新监控状态", key="refresh_monitor"): st.rerun()
     if st.session_state.monitor_thread is not None:
         monitor = st.session_state.monitor_thread
         with monitor.status_lock:
             connected = monitor.status_info.get("connected", False)
             error = monitor.status_info.get("error", "")
             quotes = list(monitor.latest_quotes)
-
         if connected:
             st.success("✅ WebSocket 已连接")
             if quotes:
                 st.write("**最近行情：**")
-                for q in reversed(quotes):
-                    st.write(f"{q['time']} {q['name']} {q['price']:.2f} {q['chg']:+.2f}%")
+                for q in reversed(quotes): st.write(f"{q['time']} {q['name']} {q['price']:.2f} {q['chg']:+.2f}%")
             else:
                 st.caption("尚未收到行情数据（可能非交易时段）")
         else:
-            if error:
-                st.error(f"❌ 连接失败：{error}")
-            else:
-                st.info("⏳ 正在连接 WebSocket ...")
+            if error: st.error(f"❌ 连接失败：{error}")
+            else: st.info("⏳ 正在连接 WebSocket ...")
 else:
     if st.session_state.monitor_thread is not None:
         st.session_state.monitor_thread.stop()
