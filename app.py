@@ -1928,7 +1928,6 @@ if run_tail:
         for _, row in tail_df.iterrows():
             advice = analyze_tail_snipe(row.to_dict())
             st.write(f"**{row['name']}** - {advice}")
-            # 提取买点止损：可从 advice 中解析，暂时用现价作为买点，下浮2%作为止损
             buy_price = round(row['price'], 2)
             stop_price = round(row['price'] * 0.98, 2)
             tail_save_data.append([
@@ -1944,31 +1943,32 @@ if run_tail:
         save_tail_snipe_results(tail_save_data, safe_dates['today'])
     else:
         st.info("无尾盘目标")
-    st.divider()
-    st.header("📡 盘中实时监控")
-    if "monitor_thread" not in st.session_state:
-        st.session_state.monitor_thread = None
-    enable_monitor = st.checkbox("启动 WebSocket 实时提醒（钉钉+AI）")
-    if enable_monitor:
-        if st.session_state.monitor_thread is None:
-            targets = st.session_state.get("last_scan_targets", [])
-            portfolios = st.session_state.get("last_portfolio", [])
-            if targets or portfolios:
-                monitor = RealtimeMonitor(
+
+# ================= 实时监控（独立组件，不再嵌套） =================
+st.divider()
+st.header("📡 盘中实时监控")
+if "monitor_thread" not in st.session_state:
+    st.session_state.monitor_thread = None
+enable_monitor = st.checkbox("启动 WebSocket 实时提醒（钉钉+AI）")
+if enable_monitor:
+    if st.session_state.monitor_thread is None:
+        targets = st.session_state.get("last_scan_targets", [])
+        portfolios = st.session_state.get("last_portfolio", [])
+        if targets or portfolios:
+            monitor = RealtimeMonitor(
                 targets, portfolios,
                 tickflow_api_key=TICKFLOW_API_KEY,
                 dingtalk_webhook=DINGTALK_WEBHOOK,
                 llm_client=llm_client,
                 llm_config=CONFIG
             )
-                monitor.start()
-                st.session_state.monitor_thread = monitor
-                st.success("监控已启动！请关注钉钉消息")
-            else:
-                st.warning("没有可监控的目标，请先运行全市场扫描")
-    else:
-        if st.session_state.monitor_thread is not None:
-            st.session_state.monitor_thread.stop()
-            st.session_state.monitor_thread = None
-            st.info("监控已停止")
-
+            monitor.start()
+            st.session_state.monitor_thread = monitor
+            st.success("监控已启动！请关注钉钉消息")
+        else:
+            st.warning("没有可监控的目标，请先运行全市场扫描")
+else:
+    if st.session_state.monitor_thread is not None:
+        st.session_state.monitor_thread.stop()
+        st.session_state.monitor_thread = None
+        st.info("监控已停止")
