@@ -11,6 +11,7 @@ import warnings
 import httpx
 import streamlit as st
 from realtime_monitor import RealtimeMonitor
+from streamlit_autorefresh import st_autorefresh
 
 # 必须第一时间调用
 st.set_page_config(page_title="V27.5 四轨猎魔 (精简版)", layout="wide")
@@ -1996,3 +1997,23 @@ else:
         st.session_state.monitor_thread.stop()
         st.session_state.monitor_thread = None
         st.success("监控已停止")
+
+    # 显示监控实时状态（如果线程在运行）
+    if st.session_state.monitor_thread is not None:
+        monitor = st.session_state.monitor_thread
+        with monitor.status_lock:
+            connected = monitor.status_info["connected"]
+            error = monitor.status_info["error"]
+            quotes = list(monitor.latest_quotes)
+
+        if connected:
+            st.success("✅ WebSocket 已连接")
+            if quotes:
+                st.write("**最近行情：**")
+                for q in reversed(quotes):
+                    st.write(f"{q['time']} {q['name']} {q['price']:.2f} {q['chg']:+.2f}%")
+        else:
+            st.error(f"❌ 未连接" + (f"（{error}）" if error else ""))
+
+    # 自动刷新（每 30 秒）
+    st_autorefresh(interval=30000, key="monitor_status_refresh")
