@@ -813,15 +813,26 @@ def validate_prediction(final_text, close_price):
     return True
     
 def save_today_predictions(normal_res, demon_res, defense_res, safe_dates):
-    if not gc or not spreadsheet_url: return
-    today_str = safe_dates['today']
-    if st.session_state.get("today_saved") == today_str:
-        st.warning("今日已保存过扫描结果，跳过重复写入")
+    if not gc or not spreadsheet_url:
         return
     worksheet = st.session_state.get("sheet1_ws")
     if worksheet is None:
         st.error("Sheet1 工作表未初始化")
         return
+
+    today_str = safe_dates['today']
+
+    # 轻量级检查：只读取第一列（日期）的最后 50 行，判断今日是否已写入
+    try:
+        # 获取日期列（第一列）的所有值，但只取最后 50 行以节省流量
+        dates = worksheet.col_values(1)[-50:]
+        if today_str in dates:
+            st.warning("今日已保存过扫描结果，跳过重复写入")
+            return
+    except Exception as e:
+        # 如果读取失败（如 429），记录警告但不中断保存
+        st.warning(f"无法检查重复日期: {e}，将继续尝试保存")
+
     all_results = []
     for res_list, track_name in [(normal_res, "缩量潜伏"), (demon_res, "主板妖股"), (defense_res, "逆风突破")]:
         for item in res_list:
@@ -838,8 +849,9 @@ def save_today_predictions(normal_res, demon_res, defense_res, safe_dates):
             if not validate_prediction(final_text, close_price):
                 st.caption(f"⚠️ {row['name']}({row['code']}) 买点/止损不合理，已跳过保存")
                 continue
+
             all_results.append([
-                safe_dates['today'],
+                today_str,
                 row['name'],
                 "'" + str(row['code']),
                 track_name,
@@ -848,17 +860,17 @@ def save_today_predictions(normal_res, demon_res, defense_res, safe_dates):
                 round(stop_price,2),
                 rating,
                 final_text,
-                None, None, None,
-                None, None, None,
-                "待验尸",
-                conditions_str
+                None, None, None,   # T+1日最高/低/收
+                None, None, None,   # T+2日开盘/均价/模拟卖出价
+                "待验尸",           # 验尸结果
+                conditions_str      # 竞价条件
             ])
+
     if all_results:
         try:
             worksheet.append_rows(all_results, value_input_option='USER_ENTERED')
             st.success(f"已保存 {len(all_results)} 条")
             st.session_state.sheet1_refresh = True
-            st.session_state.today_saved = today_str
         except Exception as e:
             st.error(f"保存失败: {e}")
 
