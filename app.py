@@ -1314,6 +1314,19 @@ if gc and spreadsheet_url:
     except Exception as e:
         if "hot_topics_data" not in st.session_state:
             st.session_state.hot_topics_data = []
+
+    try:
+        if "portfolio_data" not in st.session_state or st.session_state.get("portfolio_refresh"):
+            sh = gc.open_by_url(spreadsheet_url)
+            try:
+                ws_port = sh.worksheet("Portfolio")
+                st.session_state.portfolio_data = ws_port.get_all_records()
+            except gspread.exceptions.WorksheetNotFound:
+                st.session_state.portfolio_data = []
+            st.session_state.portfolio_refresh = False
+    except Exception as e:
+        if "portfolio_data" not in st.session_state:
+            st.session_state.portfolio_data = []
             
 # ================= 持仓管理函数（必须放在主界面之前） =================
 def load_portfolio():
@@ -1767,15 +1780,14 @@ elif scan_phase == "scan":
     # 应用侧边栏滑块的数值
     CONFIG["TOP_N_NORMAL"] = st.session_state.get("scan_top_n_normal", CONFIG["TOP_N_NORMAL"])
     CONFIG["TOP_N_DEMON"] = st.session_state.get("scan_top_n_demon", CONFIG["TOP_N_DEMON"])
-
+    normal_results, demon_results, defense_results = [], [], []
+    
     with st.spinner("获取日线数据..."):
         df, market_avg_pct = get_data_tickflow()
         if df is None: st.error("数据获取失败"); st.stop()
     market_context, market_ratio = get_market_context(tf, df)
     st.subheader("🌍 大盘环境")
     st.text(market_context)
-
-    normal_results, demon_results, defense_results = [], [], []
 
     # 轨道一
     normal_df = filter_normal_stocks(df)
