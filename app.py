@@ -847,6 +847,11 @@ def validate_prediction(final_text, close_price):
     
 def save_today_predictions(normal_res, demon_res, defense_res, safe_dates):
     if not gc or not spreadsheet_url: return
+    # 通过 session state 防止同一天重复写入（不读表）
+    today_str = safe_dates['today']
+    if st.session_state.get("today_saved") == today_str:
+        st.warning("今日已保存过扫描结果，跳过重复写入")
+        return
     try:
         sh = gc.open_by_url(spreadsheet_url)
         worksheet = sh.worksheet(SHEET_NAME)
@@ -891,6 +896,7 @@ def save_today_predictions(normal_res, demon_res, defense_res, safe_dates):
             worksheet.append_rows(all_results, value_input_option='USER_ENTERED')
             st.success(f"已保存 {len(all_results)} 条")
             st.session_state.sheet1_refresh = True
+            st.session_state.today_saved = today_str   # 标记已保存
         except Exception as e:
             st.error(f"保存失败: {e}")
 
@@ -1780,6 +1786,7 @@ elif scan_phase == "scan":
     # 应用侧边栏滑块的数值
     CONFIG["TOP_N_NORMAL"] = st.session_state.get("scan_top_n_normal", CONFIG["TOP_N_NORMAL"])
     CONFIG["TOP_N_DEMON"] = st.session_state.get("scan_top_n_demon", CONFIG["TOP_N_DEMON"])
+    
     normal_results, demon_results, defense_results = [], [], []
     
     with st.spinner("获取日线数据..."):
@@ -1871,22 +1878,33 @@ elif scan_phase == "scan":
                     for c in cond['conditions']: st.write(f"- {c}")
                     st.caption("⚠️ 若任一条件不满足，放弃买入")
         save_today_predictions(normal_results, demon_results, defense_results, safe_dates)
-        # 保存本次扫描目标用于监控
+        # 保存本次扫描目标用于监控（容错处理）
         st.session_state.last_scan_targets = []
-        for item in normal_results + demon_results + defense_results:
-            row = item['row']
-            final = item['final']
-            buy_price = extract_price_from_text(final, row['close'], "buy")
-            stop_price = extract_price_from_text(final, row['close'], "stop")
-            track = "缩量" if item in normal_results else ("妖股" if item in demon_results else "逆风")
-            st.session_state.last_scan_targets.append({
-                'code': row['code'],
-                'name': row['name'],
-                'buy_price': buy_price,
-                'stop_price': stop_price,
-                'track': track
-            })
-
+        # 防御：强制转换为列表
+        _normal = normal_results if isinstance(normal_results, list) else []
+        _demon = demon_results if isinstance(demon_results, list) else []
+        _defense = defense_results if isinstance(defense_results, list) else []
+        for item in _normal + _demon + _defense:
+            try:
+                row = item['row']
+                final = item['final']
+                buy_price = extract_price_from_text(final, row['close'], "buy")
+                stop_price = extract_price_from_text(final, row['close'], "stop")
+                if item in _normal:
+                    track = "缩量"
+                elif item in _demon:
+                    track = "妖股"
+                else:
+                    track = "逆风"
+                st.session_state.last_scan_targets.append({
+                    'code': row['code'],
+                    'name': row['name'],
+                    'buy_price': buy_price,
+                    'stop_price': stop_price,
+                    'track': track
+                })
+            except Exception:
+                continue
         # 同时加载持仓数据用于监控
         portfolio_df = load_portfolio()
         if not portfolio_df.empty:
