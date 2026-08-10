@@ -1481,6 +1481,42 @@ with st.sidebar:
 
     # 盘中实时监控
     st.header("📡 盘中实时监控")
+    # 新增：自动模式
+    auto_mode = st.checkbox("⏰ 自动模式（9:25开启，15:00关闭）", value=True,
+                            help="勾选后，页面保持打开即可自动启停监控；手动按钮仍可随时使用。")
+    
+    # 获取当前北京时间
+    now = datetime.now(tz_shanghai)
+    current_time = now.hour * 100 + now.minute
+
+    # 自动启停逻辑（仅在自动模式下生效）
+    if auto_mode:
+        should_monitor = (925 <= current_time <= 1500)
+        # 自动启动
+        if should_monitor and st.session_state.monitor_thread is None:
+            # 初始化监控（与手动启动相同的逻辑）
+            targets = load_latest_targets()
+            portfolios = load_portfolio_targets()
+            if targets or portfolios:
+                monitor = RealtimeMonitor(targets, portfolios, tickflow_api_key=TICKFLOW_API_KEY,
+                                        dingtalk_webhook=DINGTALK_WEBHOOK, llm_client=llm_client, llm_config=CONFIG)
+                monitor.start()
+                st.session_state.monitor_thread = monitor
+                st.session_state.monitor_user_enabled = True
+                st.success(f"✅ 监控已自动启动（{now.strftime('%H:%M')}）")
+        # 自动停止
+        elif not should_monitor and st.session_state.monitor_thread is not None:
+            st.session_state.monitor_thread.stop()
+            st.session_state.monitor_thread = None
+            st.session_state.monitor_user_enabled = False
+            st.success(f"✅ 监控已自动停止（{now.strftime('%H:%M')}）")
+
+    # 手动按钮（无论是否自动模式都保留，方便强制启停）
+    col1, col2 = st.columns(2)
+    with col1:
+        start_monitor = st.button("▶️ 启动监控", use_container_width=True)
+    with col2:
+        stop_monitor = st.button("⏹️ 停止监控", use_container_width=True)
     if "monitor_thread" not in st.session_state:
         st.session_state.monitor_thread = None
     if "monitor_user_enabled" not in st.session_state:
@@ -1494,6 +1530,7 @@ with st.sidebar:
     with col2:
         stop_monitor = st.button("⏹️ 停止监控", use_container_width=True)
     if start_monitor:
+        # 手动启动会覆盖自动模式的状态
         st.session_state.scan_phase = None
         st.session_state.monitor_user_enabled = True
         targets = load_latest_targets()
@@ -1504,11 +1541,12 @@ with st.sidebar:
                                         dingtalk_webhook=DINGTALK_WEBHOOK, llm_client=llm_client, llm_config=CONFIG)
                 monitor.start()
                 st.session_state.monitor_thread = monitor
-                st.success(f"✅ 监控已启动！持仓 {len(portfolios)} 只，推荐 {len(targets)} 只")
+                st.success(f"✅ 监控已启动！")
             else:
                 st.warning("没有可监控的目标")
         else:
             st.info("监控线程已在运行中")
+
     if stop_monitor:
         if st.session_state.monitor_thread is not None:
             st.session_state.monitor_thread.stop()
@@ -1561,6 +1599,9 @@ with st.sidebar:
     run_watchlist = st.button("👁️ 自选股深度诊断", type="secondary", use_container_width=True)
     st.caption("💡 盘后务必查看「明日竞价确认表」，明早若条件不达标，请放弃买入！")
 
+    # 放在侧边栏末尾或主界面
+    st_autorefresh(interval=60000, key="auto_refresh")  # 60秒刷新一次
+    
     # ========== AI 策略进化与自动回滚（底部） ==========
     st.divider()
     st.header("🧬 AI策略进化")
@@ -1779,7 +1820,7 @@ elif scan_phase == "scan":
                 else: track = "逆风"
                 st.session_state.last_scan_targets.append({
                     'code': row['code'], 'name': row['name'],
-                    'buy_price': buy_price, 'stop_price': stop_price, 'track': track
+                    'buy_price': buy_price, 'stop_price': stop_price, 'track': track, 'analysis': final
                 })
             except Exception: continue
 
