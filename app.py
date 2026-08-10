@@ -768,6 +768,44 @@ def generate_auction_checklist(stock_dict, analysis_text, track=""):
     conditions.append(f"❌ 低开幅度超过{low_limit_pct}% (低于{low_limit}元) → 放弃买入（{desc}）")
     return {'code': code, 'name': name, 'conditions': conditions, 'active': True}
 
+def extract_auction_rules(analysis_text):
+    """
+    从AI分析文本中提取三档买点规则，返回字典。
+    格式：{'high': {'price': xx, 'action': 'buy'/'ignore'}, 'flat': {...}, 'low': {...}}
+    如果提取失败，返回 None。
+    """
+    if not analysis_text:
+        return None
+    rules = {'high': None, 'flat': None, 'low': None}
+    try:
+        block_match = re.search(r'【三档买点】\s*\n(.*?)(?=\n\s*\n|\Z)', analysis_text, re.DOTALL)
+        if not block_match:
+            return None
+        block = block_match.group(1)
+        for line in block.split('\n'):
+            line = line.strip()
+            if line.startswith('- 高开'):
+                price_match = re.search(r'(\d+\.\d+)', line)
+                if price_match:
+                    price = float(price_match.group(1))
+                    action = 'ignore' if any(kw in line for kw in ['放弃', '不买', '放弃追高']) else 'buy'
+                    rules['high'] = {'price': price, 'action': action}
+            elif line.startswith('- 平开'):
+                price_match = re.search(r'(\d+\.\d+)', line)
+                if price_match:
+                    price = float(price_match.group(1))
+                    action = 'ignore' if any(kw in line for kw in ['放弃', '不买']) else 'buy'
+                    rules['flat'] = {'price': price, 'action': action}
+            elif line.startswith('- 低开'):
+                price_match = re.search(r'(\d+\.\d+)', line)
+                if price_match:
+                    price = float(price_match.group(1))
+                    action = 'ignore' if any(kw in line for kw in ['放弃', '不买']) else 'buy'
+                    rules['low'] = {'price': price, 'action': action}
+        return rules
+    except:
+        return None
+        
 # ================= 9. 价格提取与评级 =================
 def extract_price_from_text(final_text, close_price, price_type="buy"):
     json_match = re.search(r'\{[^{}]*"rating"[^{}]*\}', final_text)
@@ -1819,8 +1857,13 @@ elif scan_phase == "scan":
                 elif item in _demon: track = "妖股"
                 else: track = "逆风"
                 st.session_state.last_scan_targets.append({
-                    'code': row['code'], 'name': row['name'],
-                    'buy_price': buy_price, 'stop_price': stop_price, 'track': track, 'analysis': final
+                    'code': row['code'],
+                    'name': row['name'],
+                    'buy_price': buy_price,
+                    'stop_price': stop_price,
+                    'track': track,
+                    'analysis': final,
+                    'auction_rules': extract_auction_rules(final)   # 🆕 新增
                 })
             except Exception: continue
 
