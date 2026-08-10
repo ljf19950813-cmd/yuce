@@ -165,17 +165,21 @@ class RealtimeMonitor(threading.Thread):
 当前价：{stock_info['price']:.2f}，涨幅：{stock_info.get('pct_chg', 0):.2f}%
 触发类型：{action_type}
 请用一句话给出操作建议（买入/卖出/观望），并给出建议目标价和止损价（精确到分），格式：建议：买入，目标XX.XX，止损YY.YY。"""
-        try:
-            resp = self.llm_client.chat.completions.create(
-                model=model,
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=100,
-                timeout=10
-            )
-            return resp.choices[0].message.content.strip()
-        except Exception as e:
-            print(f"AI分析失败: {e}")
-            return None
+        for attempt in range(2):   # 重试2次
+            try:
+                resp = self.llm_client.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=1000,
+                    timeout=20   # 增加超时到20秒
+                )
+                content = resp.choices[0].message.content
+                if content and content.strip():
+                    return content.strip()
+            except Exception as e:
+                print(f"AI分析失败 (第{attempt+1}次): {e}")
+                time.sleep(1)   # 等1秒重试
+        return None   # 两次都失败则返回None
 
     def send_dingtalk_alert(self, title, text):
         headers = {"Content-Type": "application/json"}
