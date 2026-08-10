@@ -913,8 +913,8 @@ def run_autopsy(safe_dates):
         t1_data['code'] = t1_data['code'].astype(str).str.strip().str.zfill(6)
     if not t2_data.empty:
         t2_data['code'] = t2_data['code'].astype(str).str.strip().str.zfill(6)
-    st.write(f"🔍 查找 code={repr(code)}")
-    st.write(f"🔍 T1代码样例: {t1_data['code'].head(1).tolist()}")
+        st.write(f"🔍 查找 code={repr(code)}")
+        st.write(f"🔍 T1代码样例: {t1_data['code'].head(1).tolist()}")
     if t1_data.empty and t2_data.empty:
         st.warning("无法获取T+1/T+2行情数据")
         return
