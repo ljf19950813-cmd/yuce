@@ -909,9 +909,10 @@ def run_autopsy(safe_dates):
 
     t1_data = get_tickflow_data_for_symbols_offset(tf, symbols_to_check, offset_days=1)
     t2_data = get_tickflow_data_for_symbols_offset(tf, symbols_to_check, offset_days=0)
-    st.write("📡 T1数据示例代码:", t1_data['code'].head(3).tolist() if not t1_data.empty else "无T1数据")
-    st.write("📡 T2数据示例代码:", t2_data['code'].head(3).tolist() if not t2_data.empty else "无T2数据")
-    st.write("🔍 待验尸代码:", symbols_to_check)
+    if not t1_data.empty:
+        t1_data['code'] = t1_data['code'].astype(str).str.strip().str.zfill(6)
+    if not t2_data.empty:
+        t2_data['code'] = t2_data['code'].astype(str).str.strip().str.zfill(6)
     if t1_data.empty and t2_data.empty:
         st.warning("无法获取T+1/T+2行情数据")
         return
