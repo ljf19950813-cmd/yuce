@@ -882,7 +882,7 @@ def run_autopsy(safe_dates):
         return
     df_history = pd.DataFrame(data)
     if '代码' in df_history.columns:
-    df_history['代码'] = df_history['代码'].astype(str).str.replace("'", "").str.strip().str.zfill(6)
+        df_history['代码'] = df_history['代码'].astype(str).str.replace("'", "").str.strip().str.zfill(6)
     if df_history.empty:
         return
     if '验尸结果' not in df_history.columns:
