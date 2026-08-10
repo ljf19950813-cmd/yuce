@@ -68,7 +68,7 @@ class RealtimeMonitor(threading.Thread):
                                 with self.status_lock:
                                     self.status_info["last_msg_time"] = datetime.now().strftime("%H:%M:%S")
                                 for q in msg.get("data", []):
-                                    self.handle_quote(q)
+                                    self.(q)
                         except asyncio.TimeoutError:
                             continue
                         except Exception as e:
@@ -112,18 +112,41 @@ class RealtimeMonitor(threading.Thread):
             self.status_info["connected"] = True
             self.status_info["error"] = None
 
-        # 1. 买入提醒
+        # 1. 买入提醒（分档判断）
         for target in self.target_dicts[:]:
             if target.get('code', '').zfill(6) == code:
                 buy_price = target.get('buy_price', 0)
                 if buy_price > 0 and abs(price - buy_price) / buy_price <= 0.005:
-                    advice = self.get_ai_advice({
-                        'name': name, 'code': code, 'price': price,
-                        'pct_chg': chg
-                    }, "买入提醒")
+                    # 获取三档规则
+                    auction_rules = target.get('auction_rules')
+                    if auction_rules:
+                        prev_close = data.get('prev_close', 0)
+                        if prev_close > 0:
+                            chg_pct = (price - prev_close) / prev_close * 100
+                            if chg_pct > 2.0:
+                                rule = auction_rules.get('high')
+                            elif chg_pct < -2.0:
+                                rule = auction_rules.get('low')
+                            else:
+                                rule = auction_rules.get('flat')
+                            if rule and rule.get('action') == 'ignore':
+                                # AI建议该情形放弃，不推送
+                                break
+                    # 通过规则检查，生成推送
+                    analysis = target.get('analysis', '')
+                    if analysis:
+                        advice = self.get_comprehensive_advice(
+                            {'name': name, 'code': code, 'price': price, 'pct_chg': chg},
+                            "买入提醒", analysis
+                        )
+                    else:
+                        advice = self.get_ai_advice(
+                            {'name': name, 'code': code, 'price': price, 'pct_chg': chg},
+                            "买入提醒"
+                        )
                     text = f"{name}({code}) 当前价 {price:.2f}，接近建议买点 {buy_price:.2f}"
                     if advice:
-                        text += f"\n\nAI建议：{advice}"
+                        text += f"\n\nAI综合建议：{advice}"
                     self.send_dingtalk_alert("🔥 买入提醒", text)
                 break
 
@@ -180,7 +203,40 @@ class RealtimeMonitor(threading.Thread):
                 print(f"AI分析失败 (第{attempt+1}次): {e}")
                 time.sleep(1)   # 等1秒重试
         return None   # 两次都失败则返回None
+        
+    def get_comprehensive_advice(self, stock_info, action_type, original_analysis):
+        """基于原始分析和实时行情给出综合建议"""
+        if not self.llm_client or not original_analysis:
+            return None
+        model = self.llm_config.get("LLM_MODEL", "deepseek-chat")
+        prompt = f"""你是A股超短线交易决策助手。请结合T日的盘后分析，以及当前实时行情，给出操作建议。
 
+【T日盘后AI分析】（以下为该股昨日的完整分析）
+{original_analysis[:1500]}
+
+【当前实时行情】
+股票：{stock_info['name']}({stock_info['code']})
+最新价：{stock_info['price']:.2f}，涨幅：{stock_info.get('pct_chg', 0):.2f}%
+触发类型：{action_type}
+
+请判断：
+1. T日分析逻辑是否仍然有效？
+2. 当前是否适合买入（或卖出/观望）？
+3. 给出建议买入价区间（例如 10.20-10.50）或卖出价区间。
+4. 给出明确的止损价。
+输出格式（60字内）：[建议动作]，买入/卖出区间 XX.XX-YY.YY，止损 ZZ.ZZ"""
+        try:
+            resp = self.llm_client.chat.completions.create(
+                model=model,
+                messages=[{"role":"user","content":prompt}],
+                max_tokens=200,
+                timeout=20
+            )
+            return resp.choices[0].message.content.strip()
+        except Exception as e:
+            print(f"综合分析失败: {e}")
+            return None
+            
     def send_dingtalk_alert(self, title, text):
         headers = {"Content-Type": "application/json"}
         data = {
