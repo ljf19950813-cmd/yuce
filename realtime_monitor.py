@@ -37,6 +37,7 @@ class RealtimeMonitor(threading.Thread):
         self.status_info = {"connected": False, "last_msg_time": None, "error": None}
         self.latest_quotes = []
         self.max_quotes = 5
+        self._has_quotes = False
 
     def run(self):
         asyncio.run(self.async_run())
@@ -107,6 +108,7 @@ class RealtimeMonitor(threading.Thread):
             if len(self.latest_quotes) > self.max_quotes:
                 self.latest_quotes.pop(0)
             # 强制标记为已连接，消除前端延迟
+            self._has_quotes = True
             self.status_info["connected"] = True
             self.status_info["error"] = None
 
