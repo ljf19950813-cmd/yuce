@@ -68,7 +68,7 @@ class RealtimeMonitor(threading.Thread):
                                 with self.status_lock:
                                     self.status_info["last_msg_time"] = datetime.now().strftime("%H:%M:%S")
                                 for q in msg.get("data", []):
-                                    self.(q)
+                                    self.handle_quote(q)
                         except asyncio.TimeoutError:
                             continue
                         except Exception as e:
