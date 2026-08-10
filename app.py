@@ -1406,12 +1406,12 @@ def analyze_holding(stock_record, tf_client):
 复盘：[当初买入逻辑是否仍在？当前走势是否符合预期？可加入均线/量能判断]
 操作：[持有/减仓/卖出/加仓]，并附 10 字内理由
 价位：[若持有，给出新的目标价和止损价；若卖出，给出清仓价]"""
-    for attempt in range(3):
+    for attempt in range(2):
         try:
             resp = llm_client.chat.completions.create(
                 model=CONFIG["LLM_MODEL"],
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=300, timeout=30
+                max_tokens=200, timeout=25
             )
             content = resp.choices[0].message.content
             if content and content.strip(): return content.strip()
