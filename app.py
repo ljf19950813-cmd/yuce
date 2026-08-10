@@ -1292,7 +1292,7 @@ def load_portfolio():
     return df[mask].copy()
 
 def load_latest_targets():
-    """从 Sheet1 缓存中提取最新交易日的数据作为监控目标"""
+    """从 Sheet1 缓存中提取最新交易日的数据作为监控目标，包含AI分析和三档规则"""
     data = st.session_state.get("sheet1_data", [])
     if not data:
         return []
@@ -1306,12 +1306,18 @@ def load_latest_targets():
         code = str(row.get('代码', '')).replace("'", "").strip().zfill(6)
         buy_price = row.get('AI建议买点', 0)
         if buy_price and float(buy_price) > 0:
+            analysis = row.get('AI分析全文', '')
+            # 过滤明确建议放弃的标的
+            if any(kw in analysis for kw in ['不买', '放弃', '观望', '不参与', '不建议']):
+                continue
             targets.append({
                 'code': code,
                 'name': row.get('名称', ''),
                 'buy_price': float(buy_price),
                 'stop_price': float(row.get('AI建议止损', 0)),
-                'track': row.get('策略赛道', '')
+                'track': row.get('策略赛道', ''),
+                'analysis': analysis,
+                'auction_rules': extract_auction_rules(analysis)
             })
     return targets
 
@@ -1519,20 +1525,23 @@ with st.sidebar:
 
     # 盘中实时监控
     st.header("📡 盘中实时监控")
-    # 新增：自动模式
+    # 自动模式开关
     auto_mode = st.checkbox("⏰ 自动模式（9:25开启，15:00关闭）", value=True,
                             help="勾选后，页面保持打开即可自动启停监控；手动按钮仍可随时使用。")
-    
     # 获取当前北京时间
     now = datetime.now(tz_shanghai)
     current_time = now.hour * 100 + now.minute
 
+    # 初始化监控状态（仅一次）
+    if "monitor_thread" not in st.session_state:
+        st.session_state.monitor_thread = None
+    if "monitor_user_enabled" not in st.session_state:
+        st.session_state.monitor_user_enabled = False
+
     # 自动启停逻辑（仅在自动模式下生效）
     if auto_mode:
         should_monitor = (925 <= current_time <= 1500)
-        # 自动启动
         if should_monitor and st.session_state.monitor_thread is None:
-            # 初始化监控（与手动启动相同的逻辑）
             targets = load_latest_targets()
             portfolios = load_portfolio_targets()
             if targets or portfolios:
@@ -1542,33 +1551,20 @@ with st.sidebar:
                 st.session_state.monitor_thread = monitor
                 st.session_state.monitor_user_enabled = True
                 st.success(f"✅ 监控已自动启动（{now.strftime('%H:%M')}）")
-        # 自动停止
         elif not should_monitor and st.session_state.monitor_thread is not None:
             st.session_state.monitor_thread.stop()
             st.session_state.monitor_thread = None
             st.session_state.monitor_user_enabled = False
             st.success(f"✅ 监控已自动停止（{now.strftime('%H:%M')}）")
 
-    # 手动按钮（无论是否自动模式都保留，方便强制启停）
+    # 手动按钮（无论是否自动模式都保留）
     col1, col2 = st.columns(2)
     with col1:
         start_monitor = st.button("▶️ 启动监控", use_container_width=True)
     with col2:
         stop_monitor = st.button("⏹️ 停止监控", use_container_width=True)
-    if "monitor_thread" not in st.session_state:
-        st.session_state.monitor_thread = None
-    if "monitor_user_enabled" not in st.session_state:
-        st.session_state.monitor_user_enabled = False
-    if st.session_state.monitor_thread is not None and not st.session_state.monitor_user_enabled:
-        st.session_state.monitor_thread.stop()
-        st.session_state.monitor_thread = None
-    col1, col2 = st.columns(2)
-    with col1:
-        start_monitor = st.button("▶️ 启动监控", use_container_width=True)
-    with col2:
-        stop_monitor = st.button("⏹️ 停止监控", use_container_width=True)
+
     if start_monitor:
-        # 手动启动会覆盖自动模式的状态
         st.session_state.scan_phase = None
         st.session_state.monitor_user_enabled = True
         targets = load_latest_targets()
@@ -1579,7 +1575,7 @@ with st.sidebar:
                                         dingtalk_webhook=DINGTALK_WEBHOOK, llm_client=llm_client, llm_config=CONFIG)
                 monitor.start()
                 st.session_state.monitor_thread = monitor
-                st.success(f"✅ 监控已启动！")
+                st.success(f"✅ 监控已启动！持仓 {len(portfolios)} 只，推荐 {len(targets)} 只")
             else:
                 st.warning("没有可监控的目标")
         else:
@@ -1591,10 +1587,10 @@ with st.sidebar:
             st.session_state.monitor_thread = None
         st.session_state.monitor_user_enabled = False
         st.success("监控已停止")
+
     # 状态显示
     if st.session_state.monitor_thread is not None:
         monitor = st.session_state.monitor_thread
-        # 直接使用线程的公共属性（线程安全）
         is_alive = monitor.is_alive()
         quotes = list(monitor.latest_quotes) if hasattr(monitor, 'latest_quotes') else []
         has_data = hasattr(monitor, '_has_quotes') and monitor._has_quotes
@@ -1637,9 +1633,9 @@ with st.sidebar:
     run_watchlist = st.button("👁️ 自选股深度诊断", type="secondary", use_container_width=True)
     st.caption("💡 盘后务必查看「明日竞价确认表」，明早若条件不达标，请放弃买入！")
 
-    # 放在侧边栏末尾或主界面
-    st_autorefresh(interval=60000, key="auto_refresh")  # 60秒刷新一次
-    
+    # 自动刷新（每分钟检查自动模式）
+    st_autorefresh(interval=60000, key="auto_refresh")
+
     # ========== AI 策略进化与自动回滚（底部） ==========
     st.divider()
     st.header("🧬 AI策略进化")
