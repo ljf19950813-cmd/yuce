@@ -875,34 +875,50 @@ def save_today_predictions(normal_res, demon_res, defense_res, safe_dates):
             st.error(f"保存失败: {e}")
 
 def run_autopsy(safe_dates):
-    if not gc or not spreadsheet_url: return
+    if not gc or not spreadsheet_url:
+        return
     data = st.session_state.get("sheet1_data", [])
-    if not data or len(data) < 2: return
-    header = data[0]
-    df_history = pd.DataFrame(data[1:], columns=header)
-    if df_history.empty: return
-    if '验尸结果' not in df_history.columns: return
+    if not data:
+        return
+    df_history = pd.DataFrame(data)
+    if df_history.empty:
+        return
+    if '验尸结果' not in df_history.columns:
+        return
     pending = df_history[df_history['验尸结果'] == '待验尸'].copy()
-    if pending.empty: return
+    if pending.empty:
+        return
     if '日期' in pending.columns:
         t_minus_2 = safe_dates['day_before']
         pending = pending[pending['日期'].astype(str) <= t_minus_2]
         if pending.empty:
             st.info("暂无T+2日可验尸的记录")
             return
+
     if len(pending) > 10:
         pending = pending.head(10)
         st.info("待验尸记录超过 10 条，本次仅处理前 10 条")
+
     st.info(f"🔍 检测到 {len(pending)} 条可验尸记录（T+2日），开始模拟卖出...")
+
     symbols_to_check = pending['代码'].unique().tolist()
-    if not tf: return
+    if not tf:
+        return
+
     t1_data = get_tickflow_data_for_symbols_offset(tf, symbols_to_check, offset_days=1)
     t2_data = get_tickflow_data_for_symbols_offset(tf, symbols_to_check, offset_days=0)
+
     if t1_data.empty and t2_data.empty:
         st.warning("无法获取T+1/T+2行情数据")
         return
+
     worksheet = st.session_state.get("sheet1_ws")
-    if not worksheet: return
+    if not worksheet:
+        st.warning("Sheet1 工作表未初始化")
+        return
+
+    # 获取列号（用 df_history 的列名）
+    header = df_history.columns.tolist()
     try:
         col_high = header.index('T+1日最高') + 1
         col_low = header.index('T+1日最低') + 1
@@ -914,72 +930,87 @@ def run_autopsy(safe_dates):
     except ValueError as e:
         st.warning(f"表头缺失关键列: {e}")
         return
+
     update_count = 0
-    try:
-        for idx, row in pending.iterrows():
-            code = str(row['代码']).strip().replace("'", "").replace(" ", "")
-            t1_row = t1_data[t1_data['code'].astype(str).str.strip() == code]
-            if t1_row.empty: continue
-            t1 = t1_row.iloc[0]
-            t2_row = t2_data[t2_data['code'].astype(str).str.strip() == code]
-            if t2_row.empty: continue
-            t2 = t2_row.iloc[0]
-            t2_avg = (t2['high'] + t2['low'] + t2['close']) / 3
-            sell_price = t2_avg
-            try:
-                ai_buy = float(row['AI建议买点'])
-            except:
-                ai_buy = 0.0
-            if ai_buy <= 0: continue
-            if ai_buy < t1['low'] - 0.01 or ai_buy > t1['high'] + 0.01:
-                final_result = "⛔ 不可执行：T+1日未触及买点"
-            else:
-                pct = (sell_price - ai_buy) / ai_buy * 100
-                t1_dict = {'open': t1['open'], 'high': t1['high'], 'low': t1['low'], 'close': t1['close'],
-                           'pct_chg': t1.get('pct_chg', 0), 'turnover': t1.get('turnover', 0),
-                           'vol_ratio': t1.get('vol_ratio', 1)}
-                t2_dict = {'open': t2['open'], 'high': t2['high'], 'low': t2['low'], 'close': t2['close'],
-                           'avg': t2_avg, 'sell_price': sell_price, 'pct': pct}
-                analysis_text = row.get('AI分析全文', '')
-                stock_name = row.get('名称', '')
-                mode = row.get('策略赛道', '')
-                ai_result = ai_autopsy_record_v2(analysis_text, t1_dict, t2_dict, stock_name, code, mode)
-                if ai_result:
-                    final_result = f"🤖 T+2验尸:\n{ai_result}"
-                else:
-                    if pct > 5:
-                        final_result = f"🏆 大肉 +{pct:.1f}% (卖{sell_price:.2f})"
-                    elif pct > 0:
-                        final_result = f"✅ 盈利 +{pct:.1f}%"
-                    elif pct > -3:
-                        final_result = f"⚠️ 小亏 {pct:.1f}%"
-                    else:
-                        final_result = f"❌ 亏损 {pct:.1f}%"
-            sheet_row = idx + 2
-            for attempt in range(3):
-                try:
-                    worksheet.update_cell(sheet_row, col_high, round(t1['high'],2))
-                    worksheet.update_cell(sheet_row, col_low, round(t1['low'],2))
-                    worksheet.update_cell(sheet_row, col_close, round(t1['close'],2))
-                    if col_t2_open: worksheet.update_cell(sheet_row, col_t2_open, round(t2['open'],2))
-                    if col_t2_avg: worksheet.update_cell(sheet_row, col_t2_avg, round(t2_avg,2))
-                    if col_sell_price: worksheet.update_cell(sheet_row, col_sell_price, round(sell_price,2))
-                    worksheet.update_cell(sheet_row, col_result, final_result)
-                    break
-                except Exception as e:
-                    if '429' in str(e):
-                        time.sleep(10)
-                    else:
-                        raise
-            update_count += 1
-            time.sleep(0.3)
-        if update_count > 0:
-            st.success(f"💀 T+2验尸完成，更新 {update_count} 条")
-            st.session_state.sheet1_refresh = True
+    for _, row in pending.iterrows():
+        code = str(row['代码']).strip().replace("'", "").replace(" ", "")
+        t1_row = t1_data[t1_data['code'].astype(str).str.strip() == code]
+        if t1_row.empty:
+            continue
+        t1 = t1_row.iloc[0]
+        t2_row = t2_data[t2_data['code'].astype(str).str.strip() == code]
+        if t2_row.empty:
+            continue
+        t2 = t2_row.iloc[0]
+        t2_avg = (t2['high'] + t2['low'] + t2['close']) / 3
+        sell_price = t2_avg
+
+        try:
+            ai_buy = float(row['AI建议买点'])
+        except:
+            ai_buy = 0.0
+        if ai_buy <= 0:
+            continue
+
+        if ai_buy < t1['low'] - 0.01 or ai_buy > t1['high'] + 0.01:
+            final_result = "⛔ 不可执行：T+1日未触及买点"
         else:
-            st.warning("没有记录被更新")
-    except Exception as e:
-        st.warning(f"验尸异常: {e}")
+            pct = (sell_price - ai_buy) / ai_buy * 100
+            t1_dict = {'open': t1['open'], 'high': t1['high'], 'low': t1['low'], 'close': t1['close'],
+                       'pct_chg': t1.get('pct_chg', 0), 'turnover': t1.get('turnover', 0),
+                       'vol_ratio': t1.get('vol_ratio', 1)}
+            t2_dict = {'open': t2['open'], 'high': t2['high'], 'low': t2['low'], 'close': t2['close'],
+                       'avg': t2_avg, 'sell_price': sell_price, 'pct': pct}
+            analysis_text = row.get('AI分析全文', '')
+            stock_name = row.get('名称', '')
+            mode = row.get('策略赛道', '')
+
+            ai_result = ai_autopsy_record_v2(analysis_text, t1_dict, t2_dict, stock_name, code, mode)
+            if ai_result:
+                final_result = f"🤖 T+2验尸:\n{ai_result}"
+            else:
+                if pct > 5:
+                    final_result = f"🏆 大肉 +{pct:.1f}% (卖{sell_price:.2f})"
+                elif pct > 0:
+                    final_result = f"✅ 盈利 +{pct:.1f}%"
+                elif pct > -3:
+                    final_result = f"⚠️ 小亏 {pct:.1f}%"
+                else:
+                    final_result = f"❌ 亏损 {pct:.1f}%"
+
+        # 查找该代码在表格中的实际行号
+        cell = worksheet.find(code)
+        if not cell:
+            continue
+        sheet_row = cell.row
+
+        # 写入（带重试）
+        for attempt in range(3):
+            try:
+                worksheet.update_cell(sheet_row, col_high, round(t1['high'], 2))
+                worksheet.update_cell(sheet_row, col_low, round(t1['low'], 2))
+                worksheet.update_cell(sheet_row, col_close, round(t1['close'], 2))
+                if col_t2_open:
+                    worksheet.update_cell(sheet_row, col_t2_open, round(t2['open'], 2))
+                if col_t2_avg:
+                    worksheet.update_cell(sheet_row, col_t2_avg, round(t2_avg, 2))
+                if col_sell_price:
+                    worksheet.update_cell(sheet_row, col_sell_price, round(sell_price, 2))
+                worksheet.update_cell(sheet_row, col_result, final_result)
+                break
+            except Exception as e:
+                if '429' in str(e):
+                    time.sleep(10)
+                else:
+                    raise
+        update_count += 1
+        time.sleep(0.3)
+
+    if update_count > 0:
+        st.success(f"💀 T+2验尸完成，更新 {update_count} 条")
+        st.session_state.sheet1_refresh = True
+    else:
+        st.warning("没有记录被更新，请检查T+2数据是否充足")
         
 def get_tickflow_data_for_symbols_offset(tf_client, symbols_list, offset_days=2):
     if not tf_client: return pd.DataFrame()
