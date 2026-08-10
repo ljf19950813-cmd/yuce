@@ -881,6 +881,8 @@ def run_autopsy(safe_dates):
     if not data:
         return
     df_history = pd.DataFrame(data)
+    if '代码' in df_history.columns:
+    df_history['代码'] = df_history['代码'].astype(str).str.replace("'", "").str.strip().str.zfill(6)
     if df_history.empty:
         return
     if '验尸结果' not in df_history.columns:
@@ -901,7 +903,7 @@ def run_autopsy(safe_dates):
 
     st.info(f"🔍 检测到 {len(pending)} 条可验尸记录（T+2日），开始模拟卖出...")
 
-    symbols_to_check = pending['代码'].unique().tolist()
+    symbols_to_check = pending['代码'].astype(str).str.replace("'", "").str.strip().str.zfill(6).unique().tolist()
     if not tf:
         return
 
@@ -933,7 +935,7 @@ def run_autopsy(safe_dates):
 
     update_count = 0
     for _, row in pending.iterrows():
-        code = str(row['代码']).strip().replace("'", "").replace(" ", "")
+        code = str(row['代码']).strip().replace("'", "").replace(" ", "").zfill(6)
         t1_row = t1_data[t1_data['code'].astype(str).str.strip() == code]
         if t1_row.empty:
             continue
