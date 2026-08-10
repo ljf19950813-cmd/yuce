@@ -1510,7 +1510,79 @@ with st.sidebar:
         st.session_state.hot_keywords = hot_keywords_str
     else:
         st.session_state.hot_keywords = ""
+    st.divider()
+    st.header("📡 盘中实时监控")
 
+    if "monitor_thread" not in st.session_state:
+        st.session_state.monitor_thread = None
+    if "monitor_user_enabled" not in st.session_state:
+        st.session_state.monitor_user_enabled = False
+
+    # 页面加载时，若没有用户主动标记，则杀掉残留线程
+    if st.session_state.monitor_thread is not None and not st.session_state.monitor_user_enabled:
+        st.session_state.monitor_thread.stop()
+        st.session_state.monitor_thread = None
+
+    col1, col2 = st.columns(2)
+    with col1:
+        start_monitor = st.button("▶️ 启动监控", use_container_width=True)
+    with col2:
+        stop_monitor = st.button("⏹️ 停止监控", use_container_width=True)
+
+    if start_monitor:
+        st.session_state.scan_phase = None  # 防止触发扫描
+        st.session_state.monitor_user_enabled = True
+
+        # 直接从缓存加载数据（不读表）
+        targets = load_latest_targets()
+        portfolios = load_portfolio_targets()
+
+        if st.session_state.monitor_thread is None:
+            if targets or portfolios:
+                monitor = RealtimeMonitor(
+                    targets, portfolios,
+                    tickflow_api_key=TICKFLOW_API_KEY,
+                    dingtalk_webhook=DINGTALK_WEBHOOK,
+                    llm_client=llm_client,
+                    llm_config=CONFIG
+                )
+                monitor.start()
+                st.session_state.monitor_thread = monitor
+                st.success(f"✅ 监控已启动！持仓 {len(portfolios)} 只，推荐 {len(targets)} 只")
+            else:
+                st.warning("没有可监控的目标，请先运行全市场扫描或确保 Portfolio 表中有持仓")
+        else:
+            st.info("监控线程已在运行中")
+
+    if stop_monitor:
+        if st.session_state.monitor_thread is not None:
+            st.session_state.monitor_thread.stop()
+            st.session_state.monitor_thread = None
+        st.session_state.monitor_user_enabled = False
+        st.success("监控已停止")
+
+    # 状态显示
+    if st.session_state.monitor_thread is not None:
+        monitor = st.session_state.monitor_thread
+        with monitor.status_lock:
+            connected = monitor.status_info.get("connected", False)
+            error = monitor.status_info.get("error", "")
+            quotes = list(monitor.latest_quotes)
+        if connected:
+            st.success("✅ WebSocket 已连接")
+            if quotes:
+                st.write("**最近行情：**")
+                for q in reversed(quotes):
+                    st.write(f"{q['time']} {q['name']} {q['price']:.2f} {q['chg']:+.2f}%")
+            else:
+                st.caption("尚未收到行情数据")
+        else:
+            if error:
+                st.error(f"❌ 连接失败：{error}")
+            else:
+                st.info("⏳ 正在连接 WebSocket ...")
+    else:
+        st.caption("监控未启动")
 # ================= 自选股深度诊断（独立，不触发持仓流程） =================
 if run_watchlist:
     if not tf or not llm_client: st.error("客户端未初始化"); st.stop()
@@ -1793,77 +1865,3 @@ if run_tail:
         save_tail_snipe_results(tail_save_data, safe_dates['today'])
     else:
         st.info("无尾盘目标")
-
-    st.divider()
-    st.header("📡 盘中实时监控")
-
-    if "monitor_thread" not in st.session_state:
-        st.session_state.monitor_thread = None
-    if "monitor_user_enabled" not in st.session_state:
-        st.session_state.monitor_user_enabled = False
-
-    # 页面加载时，若没有用户主动标记，则杀掉残留线程
-    if st.session_state.monitor_thread is not None and not st.session_state.monitor_user_enabled:
-        st.session_state.monitor_thread.stop()
-        st.session_state.monitor_thread = None
-
-    col1, col2 = st.columns(2)
-    with col1:
-        start_monitor = st.button("▶️ 启动监控", use_container_width=True)
-    with col2:
-        stop_monitor = st.button("⏹️ 停止监控", use_container_width=True)
-
-    if start_monitor:
-        st.session_state.scan_phase = None  # 防止触发扫描
-        st.session_state.monitor_user_enabled = True
-
-        # 直接从缓存加载数据（不读表）
-        targets = load_latest_targets()
-        portfolios = load_portfolio_targets()
-
-        if st.session_state.monitor_thread is None:
-            if targets or portfolios:
-                monitor = RealtimeMonitor(
-                    targets, portfolios,
-                    tickflow_api_key=TICKFLOW_API_KEY,
-                    dingtalk_webhook=DINGTALK_WEBHOOK,
-                    llm_client=llm_client,
-                    llm_config=CONFIG
-                )
-                monitor.start()
-                st.session_state.monitor_thread = monitor
-                st.success(f"✅ 监控已启动！持仓 {len(portfolios)} 只，推荐 {len(targets)} 只")
-            else:
-                st.warning("没有可监控的目标，请先运行全市场扫描或确保 Portfolio 表中有持仓")
-        else:
-            st.info("监控线程已在运行中")
-
-    if stop_monitor:
-        if st.session_state.monitor_thread is not None:
-            st.session_state.monitor_thread.stop()
-            st.session_state.monitor_thread = None
-        st.session_state.monitor_user_enabled = False
-        st.success("监控已停止")
-
-    # 状态显示
-    if st.session_state.monitor_thread is not None:
-        monitor = st.session_state.monitor_thread
-        with monitor.status_lock:
-            connected = monitor.status_info.get("connected", False)
-            error = monitor.status_info.get("error", "")
-            quotes = list(monitor.latest_quotes)
-        if connected:
-            st.success("✅ WebSocket 已连接")
-            if quotes:
-                st.write("**最近行情：**")
-                for q in reversed(quotes):
-                    st.write(f"{q['time']} {q['name']} {q['price']:.2f} {q['chg']:+.2f}%")
-            else:
-                st.caption("尚未收到行情数据")
-        else:
-            if error:
-                st.error(f"❌ 连接失败：{error}")
-            else:
-                st.info("⏳ 正在连接 WebSocket ...")
-    else:
-        st.caption("监控未启动")
