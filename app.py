@@ -938,19 +938,18 @@ def run_autopsy(safe_dates):
 
     update_count = 0
     for _, row in pending.iterrows():
-        code = str(row['代码']).strip().replace("'", "").replace(" ", "").zfill(6)
-        t1_row = t1_data[t1_data['code'].astype(str).str.strip() == code]
+    # 彻底清除所有空白字符和单引号，补零
+        code = re.sub(r'\s+', '', str(row['代码'])).replace("'", "").zfill(6)
+        t1_row = t1_data[t1_data['code'].str.replace(r'\s+', '', regex=True).str.zfill(6) == code]
         if t1_row.empty:
             continue
         t1 = t1_row.iloc[0]
-        t2_row = t2_data[t2_data['code'].astype(str).str.strip() == code]
+        t2_row = t2_data[t2_data['code'].str.replace(r'\s+', '', regex=True).str.zfill(6) == code]
         if t2_row.empty:
             continue
         t2 = t2_row.iloc[0]
         t2_avg = (t2['high'] + t2['low'] + t2['close']) / 3
         sell_price = t2_avg
-        st.write(f"🔍 查找 code={repr(code)}")
-        st.write(f"🔍 T1代码样例: {t1_data['code'].head(1).tolist()}")
 
         try:
             ai_buy = float(row['AI建议买点'])
