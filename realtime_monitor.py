@@ -84,6 +84,7 @@ class RealtimeMonitor(threading.Thread):
                 await asyncio.sleep(5)   # 5 秒后自动重试
 
     def handle_quote(self, data):
+        # ... 原有解析代码不变 ...
         symbol = data.get("symbol", "")
         code = symbol.split('.')[0] if '.' in symbol else symbol
         price = float(data.get("last_price", 0))
@@ -93,7 +94,6 @@ class RealtimeMonitor(threading.Thread):
         name = data.get("ext", {}).get("name", symbol)
         chg = data.get("ext", {}).get("change_pct", 0) * 100
 
-        # 更新最近行情摘要
         summary = {
             'symbol': symbol,
             'name': name,
@@ -106,6 +106,9 @@ class RealtimeMonitor(threading.Thread):
             self.latest_quotes.append(summary)
             if len(self.latest_quotes) > self.max_quotes:
                 self.latest_quotes.pop(0)
+            # 强制标记为已连接，消除前端延迟
+            self.status_info["connected"] = True
+            self.status_info["error"] = None
 
         # 1. 买入提醒
         for target in self.target_dicts[:]:
