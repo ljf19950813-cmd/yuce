@@ -13,7 +13,6 @@ import streamlit as st
 from realtime_monitor import RealtimeMonitor
 from streamlit_autorefresh import st_autorefresh
 
-# 必须第一时间调用
 st.set_page_config(page_title="V27.5 四轨猎魔 (精简版)", layout="wide")
 
 # ================= 时区修复 =================
@@ -191,7 +190,7 @@ def load_hot_topics():
     except Exception as e:
         st.warning(f"加载热点主题失败: {e}")
         return []
-        
+
 def add_hotspot_flag(stock_df, confirmed_keywords_str):
     if not confirmed_keywords_str or stock_df is None or stock_df.empty:
         stock_df['is_hot'] = False
@@ -251,7 +250,7 @@ def add_hotspot_flag(stock_df, confirmed_keywords_str):
     pattern = '|'.join(expanded_kw)
     stock_df['is_hot'] = stock_df['name'].str.contains(pattern, case=False, na=False)
     return stock_df
-    
+
 def filter_recent_surge(df, days=5, max_pct=30):
     if df is None or df.empty:
         return df
@@ -273,7 +272,7 @@ def filter_recent_surge(df, days=5, max_pct=30):
     if len(result) < len(df):
         st.caption(f"🚫 近{days}日涨幅>{max_pct}%剔除 {len(df)-len(result)} 只")
     return result
-    
+
 # ================= 3. 数据获取与清洗 =================
 def get_data_tickflow():
     if not tf: return None, 0.0
@@ -811,7 +810,7 @@ def validate_prediction(final_text, close_price):
     if not (close_price * 0.85 <= stop <= close_price * 1.15): return False
     if stop >= buy: return False
     return True
-    
+
 def save_today_predictions(normal_res, demon_res, defense_res, safe_dates):
     if not gc or not spreadsheet_url:
         return
@@ -821,16 +820,12 @@ def save_today_predictions(normal_res, demon_res, defense_res, safe_dates):
         return
 
     today_str = safe_dates['today']
-
-    # 轻量级检查：只读取第一列（日期）的最后 50 行，判断今日是否已写入
     try:
-        # 获取日期列（第一列）的所有值，但只取最后 50 行以节省流量
         dates = worksheet.col_values(1)[-50:]
         if today_str in dates:
             st.warning("今日已保存过扫描结果，跳过重复写入")
             return
     except Exception as e:
-        # 如果读取失败（如 429），记录警告但不中断保存
         st.warning(f"无法检查重复日期: {e}，将继续尝试保存")
 
     all_results = []
@@ -860,10 +855,10 @@ def save_today_predictions(normal_res, demon_res, defense_res, safe_dates):
                 round(stop_price,2),
                 rating,
                 final_text,
-                None, None, None,   # T+1日最高/低/收
-                None, None, None,   # T+2日开盘/均价/模拟卖出价
-                "待验尸",           # 验尸结果
-                conditions_str      # 竞价条件
+                None, None, None,
+                None, None, None,
+                "待验尸",
+                conditions_str
             ])
 
     if all_results:
@@ -882,7 +877,9 @@ def run_autopsy(safe_dates):
         return
     df_history = pd.DataFrame(data)
     if '代码' in df_history.columns:
-        df_history['代码'] = df_history['代码'].astype(str).str.replace("'", "").str.strip().str.zfill(6)
+        df_history['代码'] = df_history['代码'].apply(
+            lambda x: re.sub(r'\s+', '', str(x)).replace("'", "").zfill(6)
+        )
     if df_history.empty:
         return
     if '验尸结果' not in df_history.columns:
@@ -903,16 +900,16 @@ def run_autopsy(safe_dates):
 
     st.info(f"🔍 检测到 {len(pending)} 条可验尸记录（T+2日），开始模拟卖出...")
 
-    symbols_to_check = pending['代码'].astype(str).str.replace("'", "").str.strip().str.zfill(6).unique().tolist()
+    symbols_to_check = pending['代码'].apply(lambda x: re.sub(r'\s+', '', str(x)).replace("'", "").zfill(6)).unique().tolist()
     if not tf:
         return
 
     t1_data = get_tickflow_data_for_symbols_offset(tf, symbols_to_check, offset_days=1)
     t2_data = get_tickflow_data_for_symbols_offset(tf, symbols_to_check, offset_days=0)
     if not t1_data.empty:
-        t1_data['code'] = t1_data['code'].astype(str).str.strip().str.zfill(6)
+        t1_data['code'] = t1_data['code'].apply(lambda x: re.sub(r'\s+', '', str(x)).replace("'", "").zfill(6))
     if not t2_data.empty:
-        t2_data['code'] = t2_data['code'].astype(str).str.strip().str.zfill(6)
+        t2_data['code'] = t2_data['code'].apply(lambda x: re.sub(r'\s+', '', str(x)).replace("'", "").zfill(6))
     if t1_data.empty and t2_data.empty:
         st.warning("无法获取T+1/T+2行情数据")
         return
@@ -922,7 +919,6 @@ def run_autopsy(safe_dates):
         st.warning("Sheet1 工作表未初始化")
         return
 
-    # 获取列号（用 df_history 的列名）
     header = df_history.columns.tolist()
     try:
         col_high = header.index('T+1日最高') + 1
@@ -937,14 +933,13 @@ def run_autopsy(safe_dates):
         return
 
     update_count = 0
-    for _, row in pending.iterrows():
-    # 彻底清除所有空白字符和单引号，补零
+    for idx, row in pending.iterrows():
         code = re.sub(r'\s+', '', str(row['代码'])).replace("'", "").zfill(6)
-        t1_row = t1_data[t1_data['code'].str.replace(r'\s+', '', regex=True).str.zfill(6) == code]
+        t1_row = t1_data[t1_data['code'] == code]
         if t1_row.empty:
             continue
         t1 = t1_row.iloc[0]
-        t2_row = t2_data[t2_data['code'].str.replace(r'\s+', '', regex=True).str.zfill(6) == code]
+        t2_row = t2_data[t2_data['code'] == code]
         if t2_row.empty:
             continue
         t2 = t2_row.iloc[0]
@@ -984,13 +979,7 @@ def run_autopsy(safe_dates):
                 else:
                     final_result = f"❌ 亏损 {pct:.1f}%"
 
-        # 查找该代码在表格中的实际行号
-        cell = worksheet.find(code)
-        if not cell:
-            continue
-        sheet_row = cell.row
-
-        # 写入（带重试）
+        sheet_row = idx + 2
         for attempt in range(3):
             try:
                 worksheet.update_cell(sheet_row, col_high, round(t1['high'], 2))
@@ -1017,7 +1006,7 @@ def run_autopsy(safe_dates):
         st.session_state.sheet1_refresh = True
     else:
         st.warning("没有记录被更新，请检查T+2数据是否充足")
-        
+
 def get_tickflow_data_for_symbols_offset(tf_client, symbols_list, offset_days=2):
     if not tf_client: return pd.DataFrame()
     parsed = []
@@ -1456,9 +1445,16 @@ with st.sidebar:
     top_n_normal = st.slider("🛡️ 缩量轨 TOP N", 1, 20, CONFIG["TOP_N_NORMAL"])
     top_n_demon = st.slider("🐉 妖股轨 TOP N", 1, 10, CONFIG["TOP_N_DEMON"])
     st.divider()
-    st.header("👁️ 自选股监控")
-    watchlist_input = st.text_area("代码", value="600519,000858,300750", height=150)
+
+    # 全市场扫描按钮
+    if st.button("🚀 全市场四轨扫描", type="primary", use_container_width=True):
+        st.session_state.scan_phase = "sell"
+        st.session_state.scan_top_n_normal = top_n_normal
+        st.session_state.scan_top_n_demon = top_n_demon
+        st.rerun()
     st.divider()
+
+    # 今日热点
     st.header("🔥 今日热点主题")
     hot_topics = load_hot_topics()
     if hot_topics:
@@ -1482,91 +1478,43 @@ with st.sidebar:
         st.session_state.hot_topics_refresh = True
         st.rerun()
     st.divider()
-    st.header("🧬 AI策略进化")
-    data = st.session_state.get("prompt_hist_data", [])
-    if len(data) > 1:
-        last_row = data[-1]
-        version = last_row[1] if len(last_row) > 1 else "?"
-        winrate = last_row[4] if len(last_row) > 4 else "?"
-        trades = last_row[5] if len(last_row) > 5 else "?"
-        st.caption(f"版本 {version} | 近{trades}笔胜率 {winrate}%")
-    st.caption(f"当前状态: {st.session_state.current_active_prompt}")
-    run_evolution = st.button("🔍 分析错题本", use_container_width=True)
-    st.divider()
-    st.header("📊 持仓跟踪")
-    run_tracking = st.button("🔍 实时跟踪分析", use_container_width=True)
-    st.divider()
-    st.header("🔥 尾盘狙击 (14:45)")
-    now = datetime.now(tz_shanghai)
-    if 1430 <= int(now.strftime('%H%M')) <= 1500:
-        st.warning("🎯 尾盘狙击模式可用")
-        run_tail = st.button("🎯 运行尾盘狙击", type="primary", use_container_width=True)
-    else:
-        run_tail = False
-        st.caption("尾盘狙击仅在 14:30-15:00 可用")
-    st.divider()
-    if st.button("🚀 全市场四轨扫描", type="primary", use_container_width=True):
-        st.session_state.scan_phase = "sell"
-        st.session_state.scan_top_n_normal = top_n_normal
-        st.session_state.scan_top_n_demon = top_n_demon
-        st.rerun()
-    run_watchlist = st.button("👁️ 自选股深度诊断", type="secondary", use_container_width=True)
-    st.caption("💡 盘后务必查看「明日竞价确认表」，明早若条件不达标，请放弃买入！")
-    if hot_keywords_str:
-        st.session_state.hot_keywords = hot_keywords_str
-    else:
-        st.session_state.hot_keywords = ""
-    st.divider()
-    st.header("📡 盘中实时监控")
 
+    # 盘中实时监控
+    st.header("📡 盘中实时监控")
     if "monitor_thread" not in st.session_state:
         st.session_state.monitor_thread = None
     if "monitor_user_enabled" not in st.session_state:
         st.session_state.monitor_user_enabled = False
-
-    # 页面加载时，若没有用户主动标记，则杀掉残留线程
     if st.session_state.monitor_thread is not None and not st.session_state.monitor_user_enabled:
         st.session_state.monitor_thread.stop()
         st.session_state.monitor_thread = None
-
     col1, col2 = st.columns(2)
     with col1:
         start_monitor = st.button("▶️ 启动监控", use_container_width=True)
     with col2:
         stop_monitor = st.button("⏹️ 停止监控", use_container_width=True)
-
     if start_monitor:
-        st.session_state.scan_phase = None  # 防止触发扫描
+        st.session_state.scan_phase = None
         st.session_state.monitor_user_enabled = True
-
-        # 直接从缓存加载数据（不读表）
         targets = load_latest_targets()
         portfolios = load_portfolio_targets()
-
         if st.session_state.monitor_thread is None:
             if targets or portfolios:
-                monitor = RealtimeMonitor(
-                    targets, portfolios,
-                    tickflow_api_key=TICKFLOW_API_KEY,
-                    dingtalk_webhook=DINGTALK_WEBHOOK,
-                    llm_client=llm_client,
-                    llm_config=CONFIG
-                )
+                monitor = RealtimeMonitor(targets, portfolios, tickflow_api_key=TICKFLOW_API_KEY,
+                                        dingtalk_webhook=DINGTALK_WEBHOOK, llm_client=llm_client, llm_config=CONFIG)
                 monitor.start()
                 st.session_state.monitor_thread = monitor
                 st.success(f"✅ 监控已启动！持仓 {len(portfolios)} 只，推荐 {len(targets)} 只")
             else:
-                st.warning("没有可监控的目标，请先运行全市场扫描或确保 Portfolio 表中有持仓")
+                st.warning("没有可监控的目标")
         else:
             st.info("监控线程已在运行中")
-
     if stop_monitor:
         if st.session_state.monitor_thread is not None:
             st.session_state.monitor_thread.stop()
             st.session_state.monitor_thread = None
         st.session_state.monitor_user_enabled = False
         st.success("监控已停止")
-
     # 状态显示
     if st.session_state.monitor_thread is not None:
         monitor = st.session_state.monitor_thread
@@ -1589,7 +1537,44 @@ with st.sidebar:
                 st.info("⏳ 正在连接 WebSocket ...")
     else:
         st.caption("监控未启动")
-# ================= 自选股深度诊断（独立，不触发持仓流程） =================
+    st.divider()
+
+    # 尾盘狙击
+    st.header("🔥 尾盘狙击 (14:45)")
+    now = datetime.now(tz_shanghai)
+    if 1430 <= int(now.strftime('%H%M')) <= 1500:
+        st.warning("🎯 尾盘狙击模式可用")
+        run_tail = st.button("🎯 运行尾盘狙击", type="primary", use_container_width=True)
+    else:
+        run_tail = False
+        st.caption("尾盘狙击仅在 14:30-15:00 可用")
+    st.divider()
+
+    # 持仓跟踪
+    st.header("📊 持仓跟踪")
+    run_tracking = st.button("🔍 实时跟踪分析", use_container_width=True)
+    st.divider()
+
+    # 自选股监控
+    st.header("👁️ 自选股监控")
+    watchlist_input = st.text_area("代码", value="600519,000858,300750", height=150)
+    run_watchlist = st.button("👁️ 自选股深度诊断", type="secondary", use_container_width=True)
+    st.caption("💡 盘后务必查看「明日竞价确认表」，明早若条件不达标，请放弃买入！")
+
+    # ========== AI 策略进化与自动回滚（底部） ==========
+    st.divider()
+    st.header("🧬 AI策略进化")
+    data = st.session_state.get("prompt_hist_data", [])
+    if len(data) > 1:
+        last_row = data[-1]
+        version = last_row[1] if len(last_row) > 1 else "?"
+        winrate = last_row[4] if len(last_row) > 4 else "?"
+        trades = last_row[5] if len(last_row) > 5 else "?"
+        st.caption(f"版本 {version} | 近{trades}笔胜率 {winrate}%")
+    st.caption(f"当前状态: {st.session_state.current_active_prompt}")
+    run_evolution = st.button("🔍 分析错题本", use_container_width=True)
+
+# ================= 主流程（自选股诊断、扫描、持仓跟踪、尾盘） =================
 if run_watchlist:
     if not tf or not llm_client: st.error("客户端未初始化"); st.stop()
     with st.spinner("获取日线数据..."):
@@ -1632,11 +1617,10 @@ if run_watchlist:
             if item['final']: st.markdown(item['final'])
             else: st.info("该股分析无输出，请检查日志")
 
-# 如果监控正在用户主动运行，禁止任何扫描流程
+# 监控拦截
 if st.session_state.get("monitor_user_enabled") and st.session_state.get("monitor_thread") is not None:
     st.session_state.scan_phase = None
-    
-# ================= 全市场扫描流程（基于会话阶段） =================
+
 scan_phase = st.session_state.get("scan_phase", None)
 if scan_phase == "sell":
     portfolio_df = load_portfolio()
@@ -1829,7 +1813,6 @@ elif scan_phase == "scan":
     if st.button("返回主界面"):
         st.session_state.scan_phase = None; st.rerun()
 
-# ================= 持仓实时跟踪 =================
 if run_tracking:
     portfolio_df = load_portfolio()
     if portfolio_df is None or portfolio_df.empty:
@@ -1847,7 +1830,6 @@ if run_tracking:
                 result = analyze_holding(holding_copy, tf)
                 st.write(result)
 
-# ================= 尾盘狙击（独立功能） =================
 if run_tail:
     tail_df = tail_sniper_scan()
     if not tail_df.empty:
