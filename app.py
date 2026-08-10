@@ -1518,29 +1518,23 @@ with st.sidebar:
     # 状态显示
     if st.session_state.monitor_thread is not None:
         monitor = st.session_state.monitor_thread
-        with monitor.status_lock:
-            connected = monitor.status_info.get("connected", False)
-            error = monitor.status_info.get("error", "")
-            last_time = monitor.status_info.get("last_msg_time")
-            quotes = list(monitor.latest_quotes)
+        # 直接使用线程的公共属性（线程安全）
+        is_alive = monitor.is_alive()
+        quotes = list(monitor.latest_quotes) if hasattr(monitor, 'latest_quotes') else []
+        has_data = hasattr(monitor, '_has_quotes') and monitor._has_quotes
 
-        # 只要有行情或连接标志或最近有消息，都视为已连接
-        if connected or quotes or (last_time and last_time != "None"):
-            if not connected:
-                with monitor.status_lock:
-                    monitor.status_info["connected"] = True
+        if is_alive and has_data:
             st.success("✅ WebSocket 已连接")
             if quotes:
                 st.write("**最近行情：**")
                 for q in reversed(quotes):
                     st.write(f"{q['time']} {q['name']} {q['price']:.2f} {q['chg']:+.2f}%")
             else:
-                st.caption("行情数据接收正常（近期无变动）")
+                st.caption("行情数据接收正常")
+        elif is_alive and not has_data:
+            st.info("⏳ 正在连接 WebSocket ...（若长时间无变化，请检查API权限）")
         else:
-            if error:
-                st.error(f"❌ 连接失败：{error}")
-            else:
-                st.info("⏳ 正在连接 WebSocket ...")
+            st.error("❌ 监控线程已停止")
     else:
         st.caption("监控未启动")
     st.divider()
