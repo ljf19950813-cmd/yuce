@@ -1409,7 +1409,7 @@ def analyze_holding(stock_record, tf_client):
     for attempt in range(2):
         try:
             resp = llm_client.chat.completions.create(
-                model=CONFIG["LLM_MODEL"],
+                model="deepseek-chat",
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=200, timeout=25
             )
