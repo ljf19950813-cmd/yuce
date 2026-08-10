@@ -1521,10 +1521,11 @@ with st.sidebar:
         with monitor.status_lock:
             connected = monitor.status_info.get("connected", False)
             error = monitor.status_info.get("error", "")
+            last_time = monitor.status_info.get("last_msg_time")
             quotes = list(monitor.latest_quotes)
 
-        # 只要收到行情数据，就视为已连接（避免界面延迟）
-        if quotes or connected:
+        # 只要有行情或连接标志或最近有消息，都视为已连接
+        if connected or quotes or (last_time and last_time != "None"):
             if not connected:
                 with monitor.status_lock:
                     monitor.status_info["connected"] = True
@@ -1534,7 +1535,7 @@ with st.sidebar:
                 for q in reversed(quotes):
                     st.write(f"{q['time']} {q['name']} {q['price']:.2f} {q['chg']:+.2f}%")
             else:
-                st.caption("尚未收到行情数据")
+                st.caption("行情数据接收正常（近期无变动）")
         else:
             if error:
                 st.error(f"❌ 连接失败：{error}")
