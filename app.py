@@ -1522,7 +1522,12 @@ with st.sidebar:
             connected = monitor.status_info.get("connected", False)
             error = monitor.status_info.get("error", "")
             quotes = list(monitor.latest_quotes)
-        if connected:
+
+        # 只要收到行情数据，就视为已连接（避免界面延迟）
+        if quotes or connected:
+            if not connected:
+                with monitor.status_lock:
+                    monitor.status_info["connected"] = True
             st.success("✅ WebSocket 已连接")
             if quotes:
                 st.write("**最近行情：**")
