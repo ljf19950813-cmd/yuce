@@ -1703,6 +1703,7 @@ with st.sidebar:
                 st.session_state.monitor_thread = monitor
                 st.session_state.monitor_user_enabled = True
                 st.success(f"✅ 监控已自动启动（{now.strftime('%H:%M')}）")
+                st.rerun()   # 立即刷新，显示最新状态
         elif not should_monitor and st.session_state.monitor_thread is not None:
             st.session_state.monitor_thread.stop()
             st.session_state.monitor_thread = None
