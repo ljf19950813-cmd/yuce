@@ -1344,6 +1344,158 @@ def load_portfolio_targets():
         })
     return portfolios
 
+def morning_fix():
+    """
+    早盘 9:30-10:00 对昨日推荐进行快速修正，结合大盘情绪。
+    返回修正后的目标列表（与 last_scan_targets 结构相同），或 None 表示无需修正。
+    """
+    if not tf or not llm_client:
+        return None
+
+    now = datetime.now(tz_shanghai)
+    current_time = now.hour * 100 + now.minute
+    if not (935 <= current_time <= 1000):
+        return None
+
+    today_str = now.strftime('%Y%m%d')
+    if st.session_state.get("morning_fix_done") == today_str:
+        return None
+
+    # 1. 获取昨日推荐
+    data = st.session_state.get("sheet1_data", [])
+    if not data:
+        return None
+    df = pd.DataFrame(data)
+    if '日期' not in df.columns or 'AI分析全文' not in df.columns:
+        return None
+
+    safe_dates = get_safe_trade_dates()
+    yesterday = safe_dates['yesterday']
+    yesterday_rows = df[df['日期'].astype(str) == yesterday]
+    if yesterday_rows.empty:
+        return None
+
+    # 2. 构建大盘情绪简报
+    # 先获取实时行情数据以便计算涨跌比等指标（复用已有的 df）
+    try:
+        realtime_all = tf.quotes.get(universes=["CN_Equity_A"], as_dataframe=True)
+    except:
+        realtime_all = None
+
+    # 获取指数行情
+    market_context, market_ratio = get_market_context(tf, realtime_all)
+    
+    # 补充大盘量能描述（从 market_context 中已包含部分）
+    # 构建一个简短的文字总结
+    if market_ratio > 1.5:
+        market_strength = "大盘偏强，多数个股上涨，可适当积极，但注意追高风险"
+    elif market_ratio > 0.8:
+        market_strength = "大盘平衡，个股分化，需精选标的，控制仓位"
+    else:
+        market_strength = "大盘偏弱，多数个股下跌，应以防守为主，严控止损"
+
+    market_brief = f"""
+当前大盘环境（用于参考）：
+{market_context}
+整体判断：{market_strength}
+"""
+
+    # 3. 获取昨日推荐的实时行情
+    codes = yesterday_rows['代码'].apply(lambda x: re.sub(r'\s+', '', str(x)).replace("'", "").zfill(6)).tolist()
+    realtime_data = get_tickflow_data_for_symbols(tf, codes)
+    if realtime_data.empty:
+        return None
+
+    # 4. 逐只修正
+    fixed_targets = []
+    for _, row in yesterday_rows.iterrows():
+        code = re.sub(r'\s+', '', str(row['代码'])).replace("'", "").zfill(6)
+        realtime = realtime_data[realtime_data['code'].astype(str).str.strip().str.zfill(6) == code]
+        if realtime.empty:
+            continue
+
+        r = realtime.iloc[0]
+        current_price = r.get('close', r.get('last_price', 0))
+        open_price = r.get('open', current_price)
+        pct_chg = r.get('pct_chg', 0)
+        volume = r.get('volume', 0)
+
+        original_analysis = row.get('AI分析全文', '')
+        buy_price = row.get('AI建议买点', 0)
+        stop_price = row.get('AI建议止损', 0)
+        track = row.get('策略赛道', '')
+
+        prompt = f"""你是A股超短线盘前修正助手。请结合今日大盘开盘情况、个股开盘数据以及昨日AI分析，判断该股今日操作策略是否需要修正，并给出具体建议。
+
+【当前大盘环境】
+{market_brief}
+
+【昨日盘后AI分析（原文）】
+{original_analysis[:1500]}
+
+【今日个股开盘数据】
+股票：{row.get('名称', '')}({code})
+开盘价：{open_price}，最新价：{current_price}，涨幅：{pct_chg:.2f}%
+成交量：{volume}手
+原始建议买点：{buy_price}，止损：{stop_price}
+策略风格：{track}
+
+请根据以上信息，特别是大盘强弱变化，对该股的三档买点策略进行修正。如果大盘转弱，可以收紧买点、降低仓位或直接放弃；如果大盘强势，可以适当放宽买点或提高目标价。
+
+请严格按以下格式输出：
+【早盘修正建议】
+- 原策略是否有效：[是/否]
+- 高开2%以上：[XX.XX 元，建议买入/放弃]
+- 平开±1%：[XX.XX 元，建议买入/放弃]
+- 低开2%以上：[XX.XX 元，建议买入/放弃]
+- 综合建议：[买入/观望/放弃]（10字内理由）"""
+
+        try:
+            resp = llm_client.chat.completions.create(
+                model="deepseek-chat",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=400,
+                timeout=25
+            )
+            fixed_analysis = resp.choices[0].message.content.strip()
+        except Exception as e:
+            logging.warning(f"早盘修正 AI 调用失败 {code}: {e}")
+            fixed_analysis = "修正失败，暂用原策略"
+
+        new_target = {
+            'code': code,
+            'name': row.get('名称', ''),
+            'buy_price': buy_price,
+            'stop_price': stop_price,
+            'track': track,
+            'analysis': fixed_analysis,
+            'auction_rules': extract_auction_rules(fixed_analysis),
+        }
+        fixed_targets.append(new_target)
+
+        text = f"【早盘修正】{row.get('名称', '')}({code})\n{fixed_analysis[:200]}"
+        send_dingtalk_alert("⏰ 早盘修正建议", text)
+        time.sleep(0.5)
+
+    st.session_state.morning_fix_done = today_str
+    return fixed_targets
+
+def send_dingtalk_alert(title, text):
+    """独立钉钉推送函数，避免循环导入"""
+    import requests
+    webhook = DINGTALK_WEBHOOK  # 使用全局变量
+    if not webhook:
+        return
+    headers = {"Content-Type": "application/json"}
+    data = {
+        "msgtype": "markdown",
+        "markdown": {"title": title, "text": f"### {title}\n{text}"}
+    }
+    try:
+        requests.post(webhook, headers=headers, json=data)
+    except Exception as e:
+        print(f"钉钉推送失败: {e}")
+        
 def save_new_buy(stock, track, buy_price, quantity, date):
     if not gc: return
     ws = st.session_state.get("portfolio_ws")
@@ -1634,6 +1786,13 @@ with st.sidebar:
     st.caption("💡 盘后务必查看「明日竞价确认表」，明早若条件不达标，请放弃买入！")
 
     # 自动刷新（每分钟检查自动模式）
+    # ========== 早盘自动修正（9:30-10:00） ==========
+    if 930 <= int(datetime.now(tz_shanghai).strftime('%H%M')) <= 1000:
+        fixed = morning_fix()
+        if fixed:
+            # 将修正后的目标更新到 session_state，以便实时监控使用
+            st.session_state.last_scan_targets = fixed
+            st.success(f"✅ 早盘修正完成，已更新 {len(fixed)} 只标的")
     st_autorefresh(interval=60000, key="auto_refresh")
 
     # ========== AI 策略进化与自动回滚（底部） ==========
