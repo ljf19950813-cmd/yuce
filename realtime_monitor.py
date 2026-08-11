@@ -45,6 +45,10 @@ class RealtimeMonitor(threading.Thread):
         self.open_prices = {}         # code -> 开盘价（用于三档判断基准）
         self.portfolio_review_interval = 30 * 60
         self._review_stop_event = threading.Event()
+        self.market_risk_check_interval = 60  # 每60秒检查一次大盘风险
+        self._risk_stop_event = threading.Event()
+        self.market_ratio = None   # 当前涨跌比
+        self.dt_count = 0          # 跌停家数
 
         # 去重构建代码列表
         all_codes = set()
@@ -66,6 +70,7 @@ class RealtimeMonitor(threading.Thread):
 
     def run(self):
         self.review_thread = self.start_review_timer()
+        self.risk_thread = self.start_market_risk_monitor()   # 新增
         asyncio.run(self.async_run())
 
     def start_review_timer(self):
@@ -117,6 +122,64 @@ class RealtimeMonitor(threading.Thread):
             if not self._stop_event.is_set():
                 await asyncio.sleep(5)
 
+        def start_market_risk_monitor(self):
+        def _risk_check():
+            while not self._risk_stop_event.is_set():
+                self._risk_stop_event.wait(self.market_risk_check_interval)
+                if not self._risk_stop_event.is_set():
+                    self.check_market_risk()
+        t = threading.Thread(target=_risk_check, daemon=True)
+        t.start()
+        return t
+
+    def check_market_risk(self):
+        """检查大盘风险，若触发则生成整体减仓建议"""
+        try:
+            # 使用 REST 接口获取大盘涨跌比（只需轻量请求）
+            import numpy as np
+            df_all = tf.quotes.get(universes=["CN_Equity_A"], as_dataframe=True)
+            if df_all is not None and not df_all.empty:
+                up_count = len(df_all[df_all['pct_chg'] > 0])
+                down_count = len(df_all[df_all['pct_chg'] < 0])
+                self.market_ratio = up_count / max(down_count, 1)
+                # 获取跌停家数（主板）
+                dt_main = len(df_all[(df_all['board']=='Main') & (df_all['pct_chg']<=-9.8)])
+                self.dt_count = dt_main
+
+                # 风险条件：涨跌比 < 0.5 且 跌停家数 > 50（可根据需要调整）
+                if self.market_ratio < 0.5 and self.dt_count > 50:
+                    self.hedge_advice()
+        except Exception as e:
+            print(f"大盘风险检查失败: {e}")
+
+    def hedge_advice(self):
+        """当触发大盘风险时，对全部持仓生成减仓建议"""
+        if not self.llm_client or not self.portfolio_dicts:
+            return
+        model = self.llm_config.get("LLM_MODEL", "deepseek-chat")
+        holdings_text = ""
+        for port in self.portfolio_dicts[:]:
+            code = port.get('code', '').zfill(6)
+            price = self.last_prices.get(code, port.get('buy_price', 0))
+            pct = (price - port.get('buy_price', 0)) / port.get('buy_price', 1) * 100
+            holdings_text += f"{port.get('name','')}({code}) 成本{port.get('buy_price')} 现价{price} 盈亏{pct:.1f}%\n"
+
+        prompt = f"""当前大盘风险极高：涨跌比{self.market_ratio:.2f}，主板跌停{self.dt_count}家。
+请为以下所有持仓给出统一的减仓或清仓建议，并说明理由（50字内）：
+{holdings_text}
+输出格式：建议整体减仓至X成，理由：..."""
+        try:
+            resp = self.llm_client.chat.completions.create(
+                model=model,
+                messages=[{"role":"user","content":prompt}],
+                max_tokens=150,
+                timeout=15
+            )
+            advice = resp.choices[0].message.content.strip()
+            self.send_dingtalk_alert("🚨 大盘风险对冲建议", advice)
+        except Exception as e:
+            print(f"对冲建议生成失败: {e}")
+            
     def handle_quote(self, data):
         symbol = data.get("symbol", "")
         code = symbol.split('.')[0] if '.' in symbol else symbol
@@ -150,6 +213,29 @@ class RealtimeMonitor(threading.Thread):
         # 更新最新价格（锁外）
         self.last_prices[code] = price
 
+        # ----- 新增：盘中盘口异动检测 -----
+        # 获取实时盘口数据（需要 depth 订阅，您之前已订阅了行情和盘口，可复用）
+        bid_vol = sum(data.get('bid_volumes', [0])) if 'bid_volumes' in data else 0
+        ask_vol = sum(data.get('ask_volumes', [0])) if 'ask_volumes' in data else 0
+        # 简单异动条件：买盘总量 > 卖盘总量 * 1.5 且 最新价高于昨收2%以上
+        prev_close = data.get('prev_close', 0)
+        if bid_vol > ask_vol * 1.5 and prev_close > 0 and (price - prev_close) / prev_close > 0.02:
+            # 主动触发买入分析，无需等待买点接近
+            for target in self.target_dicts[:]:
+                if target.get('code', '').zfill(6) == code:
+                    analysis = target.get('analysis', '')
+                    if analysis:
+                        advice = self.get_comprehensive_advice(
+                            {'name': name, 'code': code, 'price': price,
+                             'pct_chg': chg, 'bid_vol': bid_vol, 'ask_vol': ask_vol},
+                            "盘口异动买入分析",
+                            analysis
+                        )
+                        if advice:
+                            text = f"【盘口异动】{name}({code}) 当前价 {price:.2f}，买盘急增，AI建议：{advice}"
+                            self.send_dingtalk_alert("⚡ 盘口异动提醒", text)
+                    break
+                    
         # 1. 买入提醒（分档判断，使用开盘价基准）
         for target in self.target_dicts[:]:
             if target.get('code', '').zfill(6) == code:
@@ -176,6 +262,8 @@ class RealtimeMonitor(threading.Thread):
                             break  # AI建议该情形放弃，不推送
 
                     # 通过规则检查，生成推送
+                    open_p_display = open_p if open_p else 0
+                    text = f"... （开盘{open_p_display:.2f}，涨{chg_from_open:.1f}%）"
                     analysis = target.get('analysis', '')
                     if analysis:
                         advice = self.get_comprehensive_advice(
@@ -191,6 +279,8 @@ class RealtimeMonitor(threading.Thread):
                     if advice:
                         text += f"\n\nAI综合建议：{advice}"
                     self.send_dingtalk_alert("🔥 买入提醒", text)
+                    if not open_p or open_p <= 0:
+                        open_p = data.get('prev_close', price)  # 回退到昨收
                 break
 
         # 2. 持仓止损/止盈
@@ -330,3 +420,4 @@ class RealtimeMonitor(threading.Thread):
     def stop(self):
         self._stop_event.set()
         self._review_stop_event.set()
+        self._risk_stop_event.set()   # 新增
