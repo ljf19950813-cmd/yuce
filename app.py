@@ -1254,22 +1254,25 @@ if gc and spreadsheet_url:
             st.session_state.tail_snipe_ws = None
 
     # 数据缓存（按需刷新）
-    if "sheet1_data" not in st.session_state or st.session_state.get("sheet1_refresh"):
-        if st.session_state.sheet1_ws:
-            st.session_state.sheet1_data = st.session_state.sheet1_ws.get_all_records()
-            st.session_state.sheet1_refresh = False
-    if "portfolio_data" not in st.session_state or st.session_state.get("portfolio_refresh"):
-        if st.session_state.portfolio_ws:
-            st.session_state.portfolio_data = st.session_state.portfolio_ws.get_all_records()
-            st.session_state.portfolio_refresh = False
-    if "hot_topics_data" not in st.session_state or st.session_state.get("hot_topics_refresh"):
-        if st.session_state.hot_topics_ws:
-            st.session_state.hot_topics_data = st.session_state.hot_topics_ws.get_all_records()
-            st.session_state.hot_topics_refresh = False
-    if "prompt_hist_data" not in st.session_state or st.session_state.get("prompt_hist_refresh"):
-        if st.session_state.prompt_hist_ws:
-            st.session_state.prompt_hist_data = st.session_state.prompt_hist_ws.get_all_records()
-            st.session_state.prompt_hist_refresh = False
+    ws = st.session_state.get("sheet1_ws")
+    if ws and ("sheet1_data" not in st.session_state or st.session_state.get("sheet1_refresh")):
+        st.session_state.sheet1_data = ws.get_all_records()
+        st.session_state.sheet1_refresh = False
+
+    ws = st.session_state.get("portfolio_ws")
+    if ws and ("portfolio_data" not in st.session_state or st.session_state.get("portfolio_refresh")):
+        st.session_state.portfolio_data = ws.get_all_records()
+        st.session_state.portfolio_refresh = False
+
+    ws = st.session_state.get("hot_topics_ws")
+    if ws and ("hot_topics_data" not in st.session_state or st.session_state.get("hot_topics_refresh")):
+        st.session_state.hot_topics_data = ws.get_all_records()
+        st.session_state.hot_topics_refresh = False
+
+    ws = st.session_state.get("prompt_hist_ws")
+    if ws and ("prompt_hist_data" not in st.session_state or st.session_state.get("prompt_hist_refresh")):
+        st.session_state.prompt_hist_data = ws.get_all_records()
+        st.session_state.prompt_hist_refresh = False
 
 run_autopsy(safe_dates)
 
