@@ -2,11 +2,13 @@ import asyncio
 import json
 import time
 import threading
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import requests
 import websockets
 from openai import OpenAI
 
+# 北京时间时区
+TZ_SHANGHAI = timezone(timedelta(hours=8))
 
 class RealtimeMonitor(threading.Thread):
     def __init__(self, target_dicts, portfolio_dicts,
@@ -20,11 +22,10 @@ class RealtimeMonitor(threading.Thread):
         self.llm_client = llm_client
         self.llm_config = llm_config or {}
         self._has_quotes = False
-        self.last_prices = {}        # 新增：code -> price
-        self.portfolio_review_interval = 30 * 60  # 30分钟
+        self.last_prices = {}
+        self.portfolio_review_interval = 30 * 60
         self._review_stop_event = threading.Event()
 
-        # 去重构建代码列表
         all_codes = set()
         for d in target_dicts + portfolio_dicts:
             code = str(d.get('code', '')).strip().zfill(6)
@@ -36,18 +37,16 @@ class RealtimeMonitor(threading.Thread):
         ]
         self._stop_event = threading.Event()
 
-        # 状态回传（线程安全）
         self.status_lock = threading.Lock()
         self.status_info = {"connected": False, "last_msg_time": None, "error": None}
         self.latest_quotes = []
         self.max_quotes = 5
-        self._has_quotes = False
 
     def run(self):
-        # 启动定时评估线程
         self.review_thread = self.start_review_timer()
         asyncio.run(self.async_run())
-        def start_review_timer(self):
+
+    def start_review_timer(self):
         def _timer():
             while not self._review_stop_event.is_set():
                 self._review_stop_event.wait(self.portfolio_review_interval)
@@ -66,7 +65,6 @@ class RealtimeMonitor(threading.Thread):
                         self.status_info["connected"] = True
                         self.status_info["error"] = None
 
-                    # 重新订阅（断线重连后必须重发）
                     if self.tf_symbols:
                         await ws.send(json.dumps({
                             "op": "subscribe",
@@ -74,14 +72,13 @@ class RealtimeMonitor(threading.Thread):
                             "symbols": self.tf_symbols
                         }))
 
-                    # 消息处理循环
                     while not self._stop_event.is_set():
                         try:
                             raw = await asyncio.wait_for(ws.recv(), timeout=1.0)
                             msg = json.loads(raw)
                             if msg.get("op") == "quotes":
                                 with self.status_lock:
-                                    self.status_info["last_msg_time"] = datetime.now().strftime("%H:%M:%S")
+                                    self.status_info["last_msg_time"] = datetime.now(TZ_SHANGHAI).strftime("%H:%M:%S")
                                 for q in msg.get("data", []):
                                     self.handle_quote(q)
                         except asyncio.TimeoutError:
@@ -89,18 +86,16 @@ class RealtimeMonitor(threading.Thread):
                         except Exception as e:
                             with self.status_lock:
                                 self.status_info["error"] = str(e)
-                            break   # 连接异常，退出内层循环，准备重连
+                            break
             except Exception as e:
                 with self.status_lock:
                     self.status_info["connected"] = False
                     self.status_info["error"] = str(e)
 
-            # 等待重连（若未主动停止）
             if not self._stop_event.is_set():
-                await asyncio.sleep(5)   # 5 秒后自动重试
+                await asyncio.sleep(5)
 
     def handle_quote(self, data):
-        # ... 原有解析代码不变 ...
         symbol = data.get("symbol", "")
         code = symbol.split('.')[0] if '.' in symbol else symbol
         price = float(data.get("last_price", 0))
@@ -116,19 +111,16 @@ class RealtimeMonitor(threading.Thread):
             'code': code,
             'price': price,
             'chg': round(chg, 2),
-            'time': datetime.now().strftime('%H:%M:%S')
+            'time': datetime.now(TZ_SHANGHAI).strftime('%H:%M:%S')
         }
         with self.status_lock:
             self.latest_quotes.append(summary)
             if len(self.latest_quotes) > self.max_quotes:
                 self.latest_quotes.pop(0)
-            # 强制标记为已连接，消除前端延迟
             self._has_quotes = True
             self.status_info["connected"] = True
             self.status_info["error"] = None
-        with self.status_lock:
-            # ... 原有 latest_quotes 处理 ...
-        # 新增：更新最新价格
+        # 更新最新价格（锁外）
         self.last_prices[code] = price
 
         # 1. 买入提醒（分档判断）
@@ -136,7 +128,6 @@ class RealtimeMonitor(threading.Thread):
             if target.get('code', '').zfill(6) == code:
                 buy_price = target.get('buy_price', 0)
                 if buy_price > 0 and abs(price - buy_price) / buy_price <= 0.005:
-                    # 获取三档规则
                     auction_rules = target.get('auction_rules')
                     if auction_rules:
                         prev_close = data.get('prev_close', 0)
@@ -149,9 +140,7 @@ class RealtimeMonitor(threading.Thread):
                             else:
                                 rule = auction_rules.get('flat')
                             if rule and rule.get('action') == 'ignore':
-                                # AI建议该情形放弃，不推送
                                 break
-                    # 通过规则检查，生成推送
                     analysis = target.get('analysis', '')
                     if analysis:
                         advice = self.get_comprehensive_advice(
@@ -207,24 +196,23 @@ class RealtimeMonitor(threading.Thread):
 当前价：{stock_info['price']:.2f}，涨幅：{stock_info.get('pct_chg', 0):.2f}%
 触发类型：{action_type}
 请用一句话给出操作建议（买入/卖出/观望），并给出建议目标价和止损价（精确到分），格式：建议：买入，目标XX.XX，止损YY.YY。"""
-        for attempt in range(2):   # 重试2次
+        for attempt in range(2):
             try:
                 resp = self.llm_client.chat.completions.create(
                     model=model,
                     messages=[{"role": "user", "content": prompt}],
                     max_tokens=1000,
-                    timeout=20   # 增加超时到20秒
+                    timeout=20
                 )
                 content = resp.choices[0].message.content
                 if content and content.strip():
                     return content.strip()
             except Exception as e:
                 print(f"AI分析失败 (第{attempt+1}次): {e}")
-                time.sleep(1)   # 等1秒重试
-        return None   # 两次都失败则返回None
-        
+                time.sleep(1)
+        return None
+
     def get_comprehensive_advice(self, stock_info, action_type, original_analysis):
-        """基于原始分析和实时行情给出综合建议"""
         if not self.llm_client or not original_analysis:
             return None
         model = self.llm_config.get("LLM_MODEL", "deepseek-chat")
@@ -255,7 +243,7 @@ class RealtimeMonitor(threading.Thread):
         except Exception as e:
             print(f"综合分析失败: {e}")
             return None
-            
+
     def send_dingtalk_alert(self, title, text):
         headers = {"Content-Type": "application/json"}
         data = {
@@ -266,21 +254,12 @@ class RealtimeMonitor(threading.Thread):
             requests.post(self.dingtalk_webhook, headers=headers, json=data)
         except Exception as e:
             print(f"钉钉推送失败: {e}")
+
     def periodic_review(self):
-        """定时对所有持仓进行重新评估，并推送到钉钉"""
         if not self.llm_client or not self.portfolio_dicts:
             return
-        
         model = self.llm_config.get("LLM_MODEL", "deepseek-chat")
-        # 获取简要大盘描述（可以用涨跌家数，此处简化）
-        market_brief = ""
-        try:
-            # 尝试从 status_info 中获取大盘涨跌比（如果之前有更新）
-            # 这里简单写死一个描述，实际可以从外部传入或使用 REST 接口
-            market_brief = "请基于当前市场整体环境给出建议。"
-        except:
-            pass
-
+        market_brief = "请基于当前市场整体环境给出建议。"
         for port in self.portfolio_dicts[:]:
             code = port.get('code', '').zfill(6)
             price = self.last_prices.get(code)
@@ -315,8 +294,8 @@ class RealtimeMonitor(threading.Thread):
 
             text = f"【持仓定期评估】{port.get('name', '')}({code}) 当前价 {price:.2f}，盈亏 {pct_chg:.1f}%\nAI建议：{advice}"
             self.send_dingtalk_alert("📊 持仓跟踪", text)
-            time.sleep(0.5)  # 控制推送频率
-    
+            time.sleep(0.5)
+
     def stop(self):
         self._stop_event.set()
-        self._review_stop_event.set()  # 新增
+        self._review_stop_event.set()
