@@ -1606,6 +1606,101 @@ def analyze_holding(stock_record, tf_client):
             else: return f"AI调用失败: {e}"
     return "AI连续3次返回空内容，请检查模型状态或稍后重试。"
 
+def run_backtest():
+    """历史策略回测：验证三档买点策略"""
+    data = st.session_state.get("sheet1_data", [])
+    if not data:
+        st.warning("无历史数据")
+        return
+
+    df = pd.DataFrame(data)
+    if df.empty or 'AI分析全文' not in df.columns or '日期' not in df.columns:
+        st.warning("数据缺少必要列")
+        return
+
+    # 只回测已完成 T+2 的记录（日期 <= T-2）
+    safe_dates = get_safe_trade_dates()
+    t_minus_2 = safe_dates['day_before']
+    df['日期'] = df['日期'].astype(str)
+    df_backtest = df[df['日期'] <= t_minus_2].copy()
+    df_backtest = df_backtest.tail(50)
+    if df_backtest.empty:
+        st.info("暂无足够历史记录进行回测")
+        return
+
+    results = []
+    for _, row in df_backtest.iterrows():
+        try:
+            code = str(row.get('代码', '')).replace("'", "").strip().zfill(6)
+            analysis = row.get('AI分析全文', '')
+            rules = extract_auction_rules(analysis)
+            if not rules:
+                continue
+
+            # 获取 T+1 开盘价 (offset_days=1)
+            t1_data = get_tickflow_data_for_symbols_offset(tf, [code], offset_days=1)
+            if t1_data.empty:
+                continue
+            open_price = t1_data.iloc[0]['open']
+
+            # 获取 T+2 均价 (offset_days=0)
+            t2_data = get_tickflow_data_for_symbols_offset(tf, [code], offset_days=0)
+            if t2_data.empty:
+                continue
+            t2_row = t2_data.iloc[0]
+            sell_price = (t2_row['high'] + t2_row['low'] + t2_row['close']) / 3
+
+            # 计算相对于 T 日收盘的涨幅（用于判断高开/平开/低开）
+            close_t = float(row.get('收盘价', 0))
+            if close_t <= 0:
+                continue
+            chg_pct = (open_price - close_t) / close_t * 100
+
+            # 确定适用哪一档规则
+            if chg_pct > 2.0:
+                rule = rules.get('high')
+            elif chg_pct < -2.0:
+                rule = rules.get('low')
+            else:
+                rule = rules.get('flat')
+
+            if not rule or rule.get('action') != 'buy':
+                continue  # 该档不建议买入，跳过
+
+            buy_price = rule['price']
+            if buy_price <= 0:
+                continue
+            pnl = (sell_price - buy_price) / buy_price * 100
+            results.append({
+                'name': row.get('名称', ''),
+                'code': code,
+                'date': row['日期'],
+                'chg_pct': chg_pct,
+                'buy_price': buy_price,
+                'sell_price': sell_price,
+                'pnl_pct': pnl,
+                'track': row.get('策略赛道', '')
+            })
+            time.sleep(0.1)  # 避免 API 过快
+        except Exception as e:
+            continue
+
+    if not results:
+        st.warning("回测无有效结果")
+        return
+
+    df_res = pd.DataFrame(results)
+    win_count = len(df_res[df_res['pnl_pct'] > 0])
+    total = len(df_res)
+    win_rate = win_count / total * 100 if total > 0 else 0
+    avg_pnl = df_res['pnl_pct'].mean()
+
+    st.subheader("📊 历史策略回测报告")
+    st.metric("回测样本数", total)
+    st.metric("胜率", f"{win_rate:.1f}%")
+    st.metric("平均盈亏", f"{avg_pnl:.2f}%")
+    st.dataframe(df_res[['name','code','date','chg_pct','buy_price','sell_price','pnl_pct']].round(2))
+    
 def auto_rollback_if_needed():
     if not gc: return
     data = st.session_state.get("prompt_hist_data", [])
@@ -1769,6 +1864,11 @@ with st.sidebar:
     run_tracking = st.button("🔍 实时跟踪分析", use_container_width=True)
     st.divider()
 
+    st.divider()
+    st.header("🧪 策略回测")
+    if st.button("📈 历史三档策略回测", use_container_width=True):
+        run_backtest()
+        
     # 自选股监控
     st.header("👁️ 自选股监控")
     watchlist_input = st.text_area("代码", value="600519,000858,300750", height=150)
