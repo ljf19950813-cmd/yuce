@@ -11,6 +11,7 @@ import warnings
 import httpx
 import streamlit as st
 from realtime_monitor import RealtimeMonitor
+from realtime_monitor import RealtimeMonitor, send_dingtalk_alert as ding_alert
 from streamlit_autorefresh import st_autorefresh
 
 st.set_page_config(page_title="V27.5 四轨猎魔 (精简版)", layout="wide")
@@ -971,6 +972,7 @@ def run_autopsy(safe_dates):
         return
 
     update_count = 0
+    pending = pending.reset_index(drop=True)  # 在循环前添加
     for idx, row in pending.iterrows():
         code = re.sub(r'\s+', '', str(row['代码'])).replace("'", "").zfill(6)
         t1_row = t1_data[t1_data['code'] == code]
@@ -1477,27 +1479,11 @@ def morning_fix():
         fixed_targets.append(new_target)
 
         text = f"【早盘修正】{row.get('名称', '')}({code})\n{fixed_analysis[:200]}"
-        send_dingtalk_alert("⏰ 早盘修正建议", text)
+        ding_alert(DINGTALK_WEBHOOK, "⏰ 早盘修正建议", text)
         time.sleep(0.5)
 
     st.session_state.morning_fix_done = today_str
     return fixed_targets
-
-def send_dingtalk_alert(title, text):
-    """独立钉钉推送函数，避免循环导入"""
-    import requests
-    webhook = DINGTALK_WEBHOOK  # 使用全局变量
-    if not webhook:
-        return
-    headers = {"Content-Type": "application/json"}
-    data = {
-        "msgtype": "markdown",
-        "markdown": {"title": title, "text": f"### {title}\n{text}"}
-    }
-    try:
-        requests.post(webhook, headers=headers, json=data)
-    except Exception as e:
-        print(f"钉钉推送失败: {e}")
         
 def save_new_buy(stock, track, buy_price, quantity, date):
     if not gc: return
