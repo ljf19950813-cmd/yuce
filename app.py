@@ -1456,7 +1456,7 @@ def morning_fix():
 
         try:
             resp = llm_client.chat.completions.create(
-                model = CONFIG.get("LLM_MODEL_DEEP", "deepseek-v4-pro")
+                model = CONFIG.get("LLM_MODEL_DEEP", "deepseek-v4-pro"),
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=400,
                 timeout=25
