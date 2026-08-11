@@ -12,7 +12,6 @@ import httpx
 import streamlit as st
 from realtime_monitor import RealtimeMonitor
 from realtime_monitor import send_dingtalk_alert as ding_alert
-from streamlit_autorefresh import st_autorefresh
 
 st.set_page_config(page_title="V27.5 四轨猎魔 (精简版)", layout="wide")
 
@@ -1883,7 +1882,6 @@ with st.sidebar:
             # 将修正后的目标更新到 session_state，以便实时监控使用
             st.session_state.last_scan_targets = fixed
             st.success(f"✅ 早盘修正完成，已更新 {len(fixed)} 只标的")
-    st_autorefresh(interval=60000, key="auto_refresh")
 
     # ========== AI 策略进化与自动回滚（底部） ==========
     st.divider()
