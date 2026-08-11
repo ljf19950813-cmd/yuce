@@ -11,7 +11,7 @@ import warnings
 import httpx
 import streamlit as st
 from realtime_monitor import RealtimeMonitor
-from realtime_monitor import RealtimeMonitor, send_dingtalk_alert as ding_alert
+from realtime_monitor import send_dingtalk_alert as ding_alert
 from streamlit_autorefresh import st_autorefresh
 
 st.set_page_config(page_title="V27.5 四轨猎魔 (精简版)", layout="wide")
