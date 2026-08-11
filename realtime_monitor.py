@@ -10,6 +10,25 @@ from openai import OpenAI
 # 北京时间时区
 TZ_SHANGHAI = timezone(timedelta(hours=8))
 
+# ======================= 模块级钉钉推送函数 =======================
+def send_dingtalk_alert(webhook, title, text):
+    """
+    通用钉钉推送函数，可被外部（如 morning_fix）和类内部复用。
+    webhook: 钉钉机器人 Webhook 地址
+    """
+    if not webhook:
+        return
+    headers = {"Content-Type": "application/json"}
+    data = {
+        "msgtype": "markdown",
+        "markdown": {"title": title, "text": f"### {title}\n{text}"}
+    }
+    try:
+        requests.post(webhook, headers=headers, json=data)
+    except Exception as e:
+        print(f"钉钉推送失败: {e}")
+
+
 class RealtimeMonitor(threading.Thread):
     def __init__(self, target_dicts, portfolio_dicts,
                  tickflow_api_key, dingtalk_webhook,
@@ -22,10 +41,12 @@ class RealtimeMonitor(threading.Thread):
         self.llm_client = llm_client
         self.llm_config = llm_config or {}
         self._has_quotes = False
-        self.last_prices = {}
+        self.last_prices = {}         # code -> 最新价
+        self.open_prices = {}         # code -> 开盘价（用于三档判断基准）
         self.portfolio_review_interval = 30 * 60
         self._review_stop_event = threading.Event()
 
+        # 去重构建代码列表
         all_codes = set()
         for d in target_dicts + portfolio_dicts:
             code = str(d.get('code', '')).strip().zfill(6)
@@ -37,6 +58,7 @@ class RealtimeMonitor(threading.Thread):
         ]
         self._stop_event = threading.Event()
 
+        # 状态回传（线程安全）
         self.status_lock = threading.Lock()
         self.status_info = {"connected": False, "last_msg_time": None, "error": None}
         self.latest_quotes = []
@@ -99,8 +121,13 @@ class RealtimeMonitor(threading.Thread):
         symbol = data.get("symbol", "")
         code = symbol.split('.')[0] if '.' in symbol else symbol
         price = float(data.get("last_price", 0))
+        open_price = float(data.get("open", 0))
         if price <= 0:
             return
+
+        # 捕获开盘价（当日首次收到且有效）
+        if code not in self.open_prices and open_price > 0:
+            self.open_prices[code] = open_price
 
         name = data.get("ext", {}).get("name", symbol)
         chg = data.get("ext", {}).get("change_pct", 0) * 100
@@ -123,24 +150,32 @@ class RealtimeMonitor(threading.Thread):
         # 更新最新价格（锁外）
         self.last_prices[code] = price
 
-        # 1. 买入提醒（分档判断）
+        # 1. 买入提醒（分档判断，使用开盘价基准）
         for target in self.target_dicts[:]:
             if target.get('code', '').zfill(6) == code:
                 buy_price = target.get('buy_price', 0)
                 if buy_price > 0 and abs(price - buy_price) / buy_price <= 0.005:
                     auction_rules = target.get('auction_rules')
                     if auction_rules:
-                        prev_close = data.get('prev_close', 0)
-                        if prev_close > 0:
-                            chg_pct = (price - prev_close) / prev_close * 100
-                            if chg_pct > 2.0:
-                                rule = auction_rules.get('high')
-                            elif chg_pct < -2.0:
-                                rule = auction_rules.get('low')
-                            else:
-                                rule = auction_rules.get('flat')
-                            if rule and rule.get('action') == 'ignore':
-                                break
+                        open_p = self.open_prices.get(code)
+                        if open_p and open_p > 0:
+                            # 核心修正：使用开盘价计算涨跌幅，判断高开/平开/低开
+                            chg_from_open = (price - open_p) / open_p * 100
+                        else:
+                            # 若未收到开盘价，暂不触发（避免误判）
+                            break
+
+                        if chg_from_open > 2.0:
+                            rule = auction_rules.get('high')
+                        elif chg_from_open < -2.0:
+                            rule = auction_rules.get('low')
+                        else:
+                            rule = auction_rules.get('flat')
+
+                        if rule and rule.get('action') == 'ignore':
+                            break  # AI建议该情形放弃，不推送
+
+                    # 通过规则检查，生成推送
                     analysis = target.get('analysis', '')
                     if analysis:
                         advice = self.get_comprehensive_advice(
@@ -152,7 +187,7 @@ class RealtimeMonitor(threading.Thread):
                             {'name': name, 'code': code, 'price': price, 'pct_chg': chg},
                             "买入提醒"
                         )
-                    text = f"{name}({code}) 当前价 {price:.2f}，接近建议买点 {buy_price:.2f}"
+                    text = f"{name}({code}) 当前价 {price:.2f}，接近建议买点 {buy_price:.2f}（开盘{open_p:.2f}，涨{chg_from_open:.1f}%）"
                     if advice:
                         text += f"\n\nAI综合建议：{advice}"
                     self.send_dingtalk_alert("🔥 买入提醒", text)
@@ -244,16 +279,12 @@ class RealtimeMonitor(threading.Thread):
             print(f"综合分析失败: {e}")
             return None
 
+    # ------------------------------------------------------------------
+    # 以下三个方法用于类内部推送，直接调用模块级函数
+    # ------------------------------------------------------------------
     def send_dingtalk_alert(self, title, text):
-        headers = {"Content-Type": "application/json"}
-        data = {
-            "msgtype": "markdown",
-            "markdown": {"title": title, "text": f"### {title}\n{text}"}
-        }
-        try:
-            requests.post(self.dingtalk_webhook, headers=headers, json=data)
-        except Exception as e:
-            print(f"钉钉推送失败: {e}")
+        """类内部推送，使用实例的 webhook"""
+        send_dingtalk_alert(self.dingtalk_webhook, title, text)
 
     def periodic_review(self):
         if not self.llm_client or not self.portfolio_dicts:
