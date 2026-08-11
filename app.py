@@ -1096,7 +1096,7 @@ T+2日模拟卖出：开{t2_dict['open']} 均价{t2_dict.get('avg','?')} 卖出�
 请输出复盘结论。"""
     try:
         resp = llm_client.chat.completions.create(
-            model=CONFIG["LLM_MODEL"],
+            model=CONFIG.get("LLM_MODEL_FAST", "deepseek-chat")
             messages=[{"role":"system","content":system_prompt}, {"role":"user","content":user_prompt}],
             max_tokens=2000
         )
@@ -1456,7 +1456,7 @@ def morning_fix():
 
         try:
             resp = llm_client.chat.completions.create(
-                model="deepseek-chat",
+                model = CONFIG.get("LLM_MODEL_DEEP", "deepseek-v4-pro")
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=400,
                 timeout=25
