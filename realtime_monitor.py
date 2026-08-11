@@ -19,6 +19,10 @@ class RealtimeMonitor(threading.Thread):
         self.dingtalk_webhook = dingtalk_webhook
         self.llm_client = llm_client
         self.llm_config = llm_config or {}
+        self._has_quotes = False
+        self.last_prices = {}        # 新增：code -> price
+        self.portfolio_review_interval = 30 * 60  # 30分钟
+        self._review_stop_event = threading.Event()
 
         # 去重构建代码列表
         all_codes = set()
@@ -40,7 +44,18 @@ class RealtimeMonitor(threading.Thread):
         self._has_quotes = False
 
     def run(self):
+        # 启动定时评估线程
+        self.review_thread = self.start_review_timer()
         asyncio.run(self.async_run())
+        def start_review_timer(self):
+        def _timer():
+            while not self._review_stop_event.is_set():
+                self._review_stop_event.wait(self.portfolio_review_interval)
+                if not self._review_stop_event.is_set():
+                    self.periodic_review()
+        t = threading.Thread(target=_timer, daemon=True)
+        t.start()
+        return t
 
     async def async_run(self):
         url = f"wss://api.tickflow.org/v1/ws/stream?api_key={self.tickflow_api_key}"
@@ -111,6 +126,10 @@ class RealtimeMonitor(threading.Thread):
             self._has_quotes = True
             self.status_info["connected"] = True
             self.status_info["error"] = None
+        with self.status_lock:
+            # ... 原有 latest_quotes 处理 ...
+        # 新增：更新最新价格
+        self.last_prices[code] = price
 
         # 1. 买入提醒（分档判断）
         for target in self.target_dicts[:]:
@@ -247,6 +266,57 @@ class RealtimeMonitor(threading.Thread):
             requests.post(self.dingtalk_webhook, headers=headers, json=data)
         except Exception as e:
             print(f"钉钉推送失败: {e}")
+    def periodic_review(self):
+        """定时对所有持仓进行重新评估，并推送到钉钉"""
+        if not self.llm_client or not self.portfolio_dicts:
+            return
+        
+        model = self.llm_config.get("LLM_MODEL", "deepseek-chat")
+        # 获取简要大盘描述（可以用涨跌家数，此处简化）
+        market_brief = ""
+        try:
+            # 尝试从 status_info 中获取大盘涨跌比（如果之前有更新）
+            # 这里简单写死一个描述，实际可以从外部传入或使用 REST 接口
+            market_brief = "请基于当前市场整体环境给出建议。"
+        except:
+            pass
 
+        for port in self.portfolio_dicts[:]:
+            code = port.get('code', '').zfill(6)
+            price = self.last_prices.get(code)
+            if price is None:
+                continue
+            buy_price = port.get('buy_price', 0)
+            pct_chg = (price - buy_price) / buy_price * 100 if buy_price else 0
+            stop_loss = port.get('stop_loss', buy_price * 0.97)
+            profit_target = port.get('profit_target', buy_price * 1.05)
+            track = port.get('track', '')
+
+            prompt = f"""你是A股超短线持仓管理助手。请对以下持仓进行盘中评估，并给出操作建议（持有/减仓/卖出/加仓）。
+【持仓信息】
+股票：{port.get('name', '')}({code})
+策略风格：{track}
+买入价：{buy_price}，当前价：{price}，盈亏：{pct_chg:.1f}%
+止损价：{stop_loss}，止盈目标：{profit_target}
+{market_brief}
+
+请用一句话给出操作建议和理由（20字内），格式：建议：持有，理由：...
+注意：本建议仅供参考，不构成最终交易指令。"""
+            try:
+                resp = self.llm_client.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=100,
+                    timeout=15
+                )
+                advice = resp.choices[0].message.content.strip()
+            except Exception as e:
+                advice = f"评估失败：{e}"
+
+            text = f"【持仓定期评估】{port.get('name', '')}({code}) 当前价 {price:.2f}，盈亏 {pct_chg:.1f}%\nAI建议：{advice}"
+            self.send_dingtalk_alert("📊 持仓跟踪", text)
+            time.sleep(0.5)  # 控制推送频率
+    
     def stop(self):
         self._stop_event.set()
+        self._review_stop_event.set()  # 新增
